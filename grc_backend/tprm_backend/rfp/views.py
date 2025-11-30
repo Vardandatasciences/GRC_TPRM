@@ -73,6 +73,10 @@ class RFPViewSet(RFPAuthenticationMixin, viewsets.ModelViewSet):
     search_fields = ['rfp_title', 'description', 'rfp_number']
     ordering_fields = ['created_at', 'updated_at', 'submission_deadline', 'rfp_title']
     ordering = ['-created_at']
+    
+    # Explicitly set authentication and permission classes
+    authentication_classes = [UnifiedJWTAuthentication]
+    permission_classes = [SimpleAuthenticatedPermission]
 
     def get_serializer_class(self):
         if self.action == 'list':

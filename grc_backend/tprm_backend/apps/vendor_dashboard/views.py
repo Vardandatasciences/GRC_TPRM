@@ -62,16 +62,16 @@ class ScreeningMatchRateAPIView(APIView):
         try:
             with connections['default'].cursor() as cursor:
                 # Step 1: Get total vendors count from temp_vendor table
-                cursor.execute("SELECT COUNT(*) AS total_vendors FROM temp_vendor")
+                cursor.execute("SELECT COUNT(*) AS total_vendors FROM tprm_integration.temp_vendor")
                 total_vendors = cursor.fetchone()[0] or 0
                 logger.info(f"Total vendors: {total_vendors}")
                 
                 # Step 2: Get vendors with valid matches (excluding false positives and resolved matches)
                 cursor.execute("""
                     SELECT COUNT(DISTINCT v.id) AS matched_vendors
-                    FROM temp_vendor v
-                    JOIN external_screening_results esr ON v.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor v
+                    JOIN tprm_integration.external_screening_results esr ON v.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                 """)
@@ -89,9 +89,9 @@ class ScreeningMatchRateAPIView(APIView):
                         sm.match_type,
                         COUNT(DISTINCT v.id) as vendor_count,
                         ROUND((COUNT(DISTINCT v.id) * 100.0 / %s), 1) as percentage
-                    FROM temp_vendor v
-                    JOIN external_screening_results esr ON v.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor v
+                    JOIN tprm_integration.external_screening_results esr ON v.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                     GROUP BY sm.match_type
@@ -172,14 +172,14 @@ class QuestionnaireOverdueRateAPIView(APIView):
         try:
             with connections['default'].cursor() as cursor:
                 # Step 1: Get total questionnaires count from questionnaire_assignments table
-                cursor.execute("SELECT COUNT(*) AS total_questionnaires FROM questionnaire_assignments")
+                cursor.execute("SELECT COUNT(*) AS total_questionnaires FROM tprm_integration.questionnaire_assignments")
                 total_questionnaires = cursor.fetchone()[0] or 0
                 logger.info(f"Total questionnaires: {total_questionnaires}")
                 
                 # Step 2: Get overdue questionnaires count
                 cursor.execute("""
                     SELECT COUNT(*) AS overdue_questionnaires
-                    FROM questionnaire_assignments
+                    FROM tprm_integration.questionnaire_assignments
                     WHERE due_date < NOW()
                       AND (submission_date IS NULL OR submission_date > due_date)
                 """)
@@ -195,7 +195,7 @@ class QuestionnaireOverdueRateAPIView(APIView):
                 # Get on-time questionnaires count
                 cursor.execute("""
                     SELECT COUNT(*) AS ontime_questionnaires
-                    FROM questionnaire_assignments
+                    FROM tprm_integration.questionnaire_assignments
                     WHERE NOT (due_date < NOW() AND (submission_date IS NULL OR submission_date > due_date))
                 """)
                 ontime_questionnaires = cursor.fetchone()[0] or 0
@@ -268,7 +268,7 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
         try:
             with connections['default'].cursor() as cursor:
                 # Step 1: Get total vendors count from temp_vendor table
-                cursor.execute("SELECT COUNT(*) AS total_vendors FROM temp_vendor")
+                cursor.execute("SELECT COUNT(*) AS total_vendors FROM tprm_integration.temp_vendor")
                 total_vendors = cursor.fetchone()[0] or 0
                 logger.info(f"Total vendors: {total_vendors}")
                 
@@ -276,9 +276,9 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
                 # Join temp_vendor with external_screening_results and screening_matches
                 cursor.execute("""
                     SELECT COUNT(DISTINCT v.id) AS flagged_vendors
-                    FROM temp_vendor v
-                    JOIN external_screening_results esr ON v.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor v
+                    JOIN tprm_integration.external_screening_results esr ON v.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                       AND sm.match_type IN ('OFAC - sdn', 'PEP')
@@ -291,9 +291,9 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
                     SELECT 
                         sm.match_type,
                         COUNT(DISTINCT v.id) as vendor_count
-                    FROM temp_vendor v
-                    JOIN external_screening_results esr ON v.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor v
+                    JOIN tprm_integration.external_screening_results esr ON v.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                       AND sm.match_type IN ('OFAC - sdn', 'PEP')
@@ -312,9 +312,9 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
                         sm.match_type,
                         sm.resolution_status,
                         sm.match_score
-                    FROM temp_vendor v
-                    JOIN external_screening_results esr ON v.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor v
+                    JOIN tprm_integration.external_screening_results esr ON v.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                       AND sm.match_type IN ('OFAC - sdn', 'PEP')
@@ -343,9 +343,9 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
                     SELECT 
                         DATE_FORMAT(tv.created_at, '%Y-%m') AS month,
                         COUNT(DISTINCT tv.id) AS flagged_vendors_count
-                    FROM temp_vendor tv
-                    JOIN external_screening_results esr ON tv.id = esr.vendor_id
-                    JOIN screening_matches sm ON esr.screening_id = sm.screening_id
+                    FROM tprm_integration.temp_vendor tv
+                    JOIN tprm_integration.external_screening_results esr ON tv.id = esr.vendor_id
+                    JOIN tprm_integration.screening_matches sm ON esr.screening_id = sm.screening_id
                     WHERE sm.is_false_positive = 0
                       AND sm.resolution_status IN ('PENDING', 'ESCALATED', 'BLOCKED')
                       AND sm.match_type IN ('OFAC - sdn', 'PEP')
@@ -450,8 +450,8 @@ class VendorAcceptanceTimeAPIView(APIView):
                 # Step 1: Get overall average acceptance time
                 cursor.execute("""
                     SELECT AVG(DATEDIFF(v.created_at, tv.created_at)) AS avg_acceptance_time
-                    FROM vendors v
-                    JOIN temp_vendor tv ON v.vendor_code = tv.vendor_code
+                    FROM tprm_integration.vendors v
+                    JOIN tprm_integration.temp_vendor tv ON v.vendor_code = tv.vendor_code
                     WHERE v.status = 'APPROVED'
                 """)
                 result = cursor.fetchone()
@@ -466,8 +466,8 @@ class VendorAcceptanceTimeAPIView(APIView):
                         v.company_name,
                         DATEDIFF(v.created_at, tv.created_at) AS acceptance_days,
                         DATE_FORMAT(v.created_at, '%Y-%m') AS approval_month
-                    FROM vendors v
-                    JOIN temp_vendor tv ON v.vendor_code = tv.vendor_code
+                    FROM tprm_integration.vendors v
+                    JOIN tprm_integration.temp_vendor tv ON v.vendor_code = tv.vendor_code
                     WHERE v.status = 'APPROVED'
                     ORDER BY v.created_at ASC
                 """)
@@ -501,8 +501,8 @@ class VendorAcceptanceTimeAPIView(APIView):
                 # Step 3: Get total approved vendors count
                 cursor.execute("""
                     SELECT COUNT(*) AS total_approved_vendors
-                    FROM vendors v
-                    JOIN temp_vendor tv ON v.vendor_code = tv.vendor_code
+                    FROM tprm_integration.vendors v
+                    JOIN tprm_integration.temp_vendor tv ON v.vendor_code = tv.vendor_code
                     WHERE v.status = 'APPROVED'
                 """)
                 total_approved_vendors = cursor.fetchone()[0] or 0
@@ -513,8 +513,8 @@ class VendorAcceptanceTimeAPIView(APIView):
                     SELECT 
                         DATE_FORMAT(v.created_at, '%Y-%m') AS month,
                         AVG(DATEDIFF(v.created_at, tv.created_at)) AS avg_acceptance_time
-                    FROM vendors v
-                    JOIN temp_vendor tv ON v.vendor_code = tv.vendor_code
+                    FROM tprm_integration.vendors v
+                    JOIN tprm_integration.temp_vendor tv ON v.vendor_code = tv.vendor_code
                     WHERE v.status = 'APPROVED'
                       AND v.created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
                     GROUP BY DATE_FORMAT(v.created_at, '%Y-%m')
@@ -818,15 +818,15 @@ class VendorRegistrationCompletionRateAPIView(APIView):
         try:
             with connections['default'].cursor() as cursor:
                 # Step 1: Get total award notifications
-                cursor.execute("SELECT COUNT(*) AS total_notifications FROM rfp_award_notifications")
+                cursor.execute("SELECT COUNT(*) AS total_notifications FROM tprm_integration.rfp_award_notifications")
                 total_notifications = cursor.fetchone()[0] or 0
                 logger.info(f"Total award notifications: {total_notifications}")
                 
                 # Step 2: Get vendors who completed registration (response_id exists in temp_vendor)
                 cursor.execute("""
                     SELECT COUNT(DISTINCT ran.response_id) AS registered_vendors
-                    FROM rfp_award_notifications ran
-                    INNER JOIN temp_vendor tv ON ran.response_id = tv.response_id
+                    FROM tprm_integration.rfp_award_notifications ran
+                    INNER JOIN tprm_integration.temp_vendor tv ON ran.response_id = tv.response_id
                     WHERE ran.response_id IS NOT NULL
                 """)
                 registered_vendors = cursor.fetchone()[0] or 0
@@ -840,8 +840,8 @@ class VendorRegistrationCompletionRateAPIView(APIView):
                 # Step 4: Get pending registrations (notifications sent but not yet registered)
                 cursor.execute("""
                     SELECT COUNT(*) AS pending_registrations
-                    FROM rfp_award_notifications ran
-                    LEFT JOIN temp_vendor tv ON ran.response_id = tv.response_id
+                    FROM tprm_integration.rfp_award_notifications ran
+                    LEFT JOIN tprm_integration.temp_vendor tv ON ran.response_id = tv.response_id
                     WHERE ran.response_id IS NOT NULL 
                       AND tv.response_id IS NULL
                 """)
@@ -854,8 +854,8 @@ class VendorRegistrationCompletionRateAPIView(APIView):
                         ran.notification_status,
                         COUNT(*) as count,
                         SUM(CASE WHEN tv.response_id IS NOT NULL THEN 1 ELSE 0 END) as registered_count
-                    FROM rfp_award_notifications ran
-                    LEFT JOIN temp_vendor tv ON ran.response_id = tv.response_id
+                    FROM tprm_integration.rfp_award_notifications ran
+                    LEFT JOIN tprm_integration.temp_vendor tv ON ran.response_id = tv.response_id
                     WHERE ran.response_id IS NOT NULL
                     GROUP BY ran.notification_status
                     ORDER BY ran.notification_status
@@ -932,8 +932,8 @@ class VendorRegistrationTimeAPIView(APIView):
                 # Step 1: Get average registration time (response_date to created_at)
                 cursor.execute("""
                     SELECT AVG(DATEDIFF(tv.created_at, ran.response_date)) AS avg_registration_time
-                    FROM temp_vendor tv
-                    INNER JOIN rfp_award_notifications ran ON tv.response_id = ran.response_id
+                    FROM tprm_integration.temp_vendor tv
+                    INNER JOIN tprm_integration.rfp_award_notifications ran ON tv.response_id = ran.response_id
                     WHERE ran.response_date IS NOT NULL 
                       AND tv.created_at IS NOT NULL
                       AND ran.response_date <= tv.created_at
@@ -951,8 +951,8 @@ class VendorRegistrationTimeAPIView(APIView):
                         AVG(DATEDIFF(tv.created_at, ran.response_date)) as avg_time,
                         MIN(DATEDIFF(tv.created_at, ran.response_date)) as min_time,
                         MAX(DATEDIFF(tv.created_at, ran.response_date)) as max_time
-                    FROM temp_vendor tv
-                    INNER JOIN rfp_award_notifications ran ON tv.response_id = ran.response_id
+                    FROM tprm_integration.temp_vendor tv
+                    INNER JOIN tprm_integration.rfp_award_notifications ran ON tv.response_id = ran.response_id
                     WHERE ran.response_date IS NOT NULL 
                       AND tv.created_at IS NOT NULL
                       AND ran.response_date <= tv.created_at
@@ -1011,8 +1011,8 @@ class VendorRegistrationTimeAPIView(APIView):
                 
                 # Step 4: Get total vendors with registration time data
                 cursor.execute("""
-                    SELECT COUNT(*) FROM temp_vendor tv
-                    INNER JOIN rfp_award_notifications ran ON tv.response_id = ran.response_id
+                    SELECT COUNT(*) FROM tprm_integration.temp_vendor tv
+                    INNER JOIN tprm_integration.rfp_award_notifications ran ON tv.response_id = ran.response_id
                     WHERE ran.response_date IS NOT NULL 
                       AND tv.created_at IS NOT NULL
                       AND ran.response_date <= tv.created_at
@@ -1031,8 +1031,8 @@ class VendorRegistrationTimeAPIView(APIView):
                             ELSE '2+ weeks'
                         END as time_bucket,
                         COUNT(*) as vendor_count
-                    FROM temp_vendor tv
-                    INNER JOIN rfp_award_notifications ran ON tv.response_id = ran.response_id
+                    FROM tprm_integration.temp_vendor tv
+                    INNER JOIN tprm_integration.rfp_award_notifications ran ON tv.response_id = ran.response_id
                     WHERE ran.response_date IS NOT NULL 
                       AND tv.created_at IS NOT NULL
                       AND ran.response_date <= tv.created_at
@@ -1059,8 +1059,8 @@ class VendorRegistrationTimeAPIView(APIView):
                         DATEDIFF(tv.created_at, ran.response_date) as registration_days,
                         ran.response_date,
                         tv.created_at
-                    FROM temp_vendor tv
-                    INNER JOIN rfp_award_notifications ran ON tv.response_id = ran.response_id
+                    FROM tprm_integration.temp_vendor tv
+                    INNER JOIN tprm_integration.rfp_award_notifications ran ON tv.response_id = ran.response_id
                     WHERE ran.response_date IS NOT NULL 
                       AND tv.created_at IS NOT NULL
                       AND ran.response_date <= tv.created_at

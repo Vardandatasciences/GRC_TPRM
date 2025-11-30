@@ -43,7 +43,6 @@ from pathlib import Path
 
 # RBAC imports
 from tprm_backend.rbac.tprm_decorators import rbac_contract_required
-from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
 
 # Import models and serializers
 from .models import Vendor, VendorContract, ContractTerm, ContractClause, VendorContact, ContractAmendment, ContractRenewal
@@ -331,6 +330,7 @@ def contract_list(request):
             }, status=429)
         
         # Get user_id from request
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -449,6 +449,7 @@ def contract_detail(request, contract_id):
     """Get contract details by ID"""
     try:
         # Get user_id from request
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -498,6 +499,7 @@ def contract_comprehensive_detail(request, contract_id):
         logger.info(f"Starting comprehensive contract detail fetch for contract_id: {contract_id}")
         
         # Get user_id from request
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -2737,6 +2739,7 @@ def contract_renewals_list(request):
             }, status=429)
         
         # Get user_id from request
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -2974,6 +2977,7 @@ def contract_renewal_detail(request, renewal_id):
             }, status=429)
         
         # Get user_id from request
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -3840,10 +3844,7 @@ def users_list(request):
             }, status=429)
         
         # Get all users from custom User model
-        try:
-            from tprm_backend.mfa_auth.models import User
-        except ImportError:
-            from mfa_auth.models import User
+        from mfa_auth.models import User
         users = User.objects.all().order_by('userid')
         
         logger.info(f"Found {users.count()} users in database")
@@ -3894,10 +3895,7 @@ def legal_reviewers_list(request):
             }, status=429)
         
         # Get all users from custom User model (since RBAC is removed, all users can be legal reviewers)
-        try:
-            from tprm_backend.mfa_auth.models import User
-        except ImportError:
-            from mfa_auth.models import User
+        from mfa_auth.models import User
         users = User.objects.all().order_by('userid')
         
         logger.info(f"Found {users.count()} users for legal reviewers")
@@ -3962,6 +3960,7 @@ def subcontracts_list(request, parent_contract_id):
         ).select_related('vendor').order_by('created_at')
         
         # Check if the current user is a vendor
+        from rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         is_vendor = False
         

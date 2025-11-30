@@ -88,7 +88,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
                 with connections['default'].cursor() as cursor:
 
-                    cursor.execute("SELECT vendor_id FROM vendors WHERE vendor_code = %s", [temp_vendor.vendor_code])
+                    cursor.execute("SELECT vendor_id FROM tprm_integration.vendors WHERE vendor_code = %s", [temp_vendor.vendor_code])
 
                     existing_vendor = cursor.fetchone()
 
@@ -1957,7 +1957,7 @@ def get_users(request):
 
                 SELECT UserId, UserName, Email, CreatedAt 
 
-                FROM users 
+                FROM tprm_integration.users 
 
                 ORDER BY UserName
 
