@@ -7,6 +7,7 @@
 
 import { api } from './api'
 
+// Base path for contracts API - matches Django URL structure: /api/tprm/contracts/
 const CONTRACTS_API_BASE = '/contracts'
 
 class ContractsApiService {
@@ -17,10 +18,19 @@ class ContractsApiService {
    */
   async getContracts(params = {}) {
     try {
-      const response = await api.get(`${CONTRACTS_API_BASE}/contracts/`, { params })
+      const url = `${CONTRACTS_API_BASE}/contracts/`
+      console.log(`[ContractsAPI] GET ${url}`, { params })
+      const response = await api.get(url, { params })
+      console.log(`[ContractsAPI] Response:`, response.status, response.data)
       return response.data
     } catch (error) {
-      console.error('Error fetching contracts:', error)
+      console.error('[ContractsAPI] Error fetching contracts:', {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        url: error.config?.url
+      })
       throw this.handleError(error)
     }
   }
@@ -1524,6 +1534,14 @@ class ContractsApiService {
     if (error.response) {
       // Server responded with error status
       const { status, data } = error.response
+      const url = error.config?.url || 'unknown'
+      
+      console.error(`[ContractsAPI] HTTP Error ${status} for ${url}:`, {
+        status,
+        statusText: error.response.statusText,
+        data,
+        headers: error.response.headers
+      })
       
       if (status === 401) {
         return new Error('Authentication required. Please log in.')
@@ -1534,15 +1552,28 @@ class ContractsApiService {
       } else if (status === 429) {
         return new Error('Too many requests. Please try again later.')
       } else if (status >= 500) {
-        return new Error('Server error. Please try again later.')
+        // Log detailed error for 500 errors to help debug backend issues
+        const errorDetails = data?.detail || data?.error || data?.message || 'Unknown server error'
+        console.error(`[ContractsAPI] Server Error Details:`, {
+          url,
+          status,
+          error: errorDetails,
+          fullResponse: data
+        })
+        return new Error(`Server error (${status}): ${errorDetails}. Please check the backend logs.`)
       } else {
-        return new Error(data.message || data.error || 'An error occurred.')
+        return new Error(data.message || data.error || data.detail || 'An error occurred.')
       }
     } else if (error.request) {
       // Network error
+      console.error('[ContractsAPI] Network Error:', {
+        url: error.config?.url,
+        message: error.message
+      })
       return new Error('Network error. Please check your connection.')
     } else {
       // Other error
+      console.error('[ContractsAPI] Unexpected Error:', error)
       return new Error(error.message || 'An unexpected error occurred.')
     }
   }

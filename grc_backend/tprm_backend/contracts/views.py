@@ -10,7 +10,7 @@ import json
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
-from django.db import transaction, connection
+from django.db import transaction, connection, connections
 from django.db.models import Q, Count, Sum, Avg, Case, When, IntegerField, CharField, Value
 from django.utils import timezone
 from django.conf import settings
@@ -330,7 +330,7 @@ def contract_list(request):
             }, status=429)
         
         # Get user_id from request
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -449,7 +449,7 @@ def contract_detail(request, contract_id):
     """Get contract details by ID"""
     try:
         # Get user_id from request
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -499,7 +499,7 @@ def contract_comprehensive_detail(request, contract_id):
         logger.info(f"Starting comprehensive contract detail fetch for contract_id: {contract_id}")
         
         # Get user_id from request
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -1862,8 +1862,8 @@ def contract_risk_exposure_kpi(request):
                 )
             )
         else:
-            # Use raw SQL as fallback
-            with connection.cursor() as cursor:
+            # Use raw SQL as fallback - use tprm database connection
+            with connections['tprm'].cursor() as cursor:
                 cursor.execute("""
                     SELECT 
                         `row`,
@@ -1927,7 +1927,8 @@ def contract_risk_exposure_kpi(request):
         if use_model:
             total_risk_records = Risk.objects.filter(entity='contract_module').count()
         else:
-            with connection.cursor() as cursor:
+            # Use tprm database connection for raw SQL
+            with connections['tprm'].cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) FROM risk_tprm WHERE entity = 'contract_module'")
                 total_risk_records = cursor.fetchone()[0]
         
@@ -2739,7 +2740,7 @@ def contract_renewals_list(request):
             }, status=429)
         
         # Get user_id from request
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -2977,7 +2978,7 @@ def contract_renewal_detail(request, renewal_id):
             }, status=429)
         
         # Get user_id from request
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         
         # Check if user is a vendor and get vendor info
@@ -3960,7 +3961,7 @@ def subcontracts_list(request, parent_contract_id):
         ).select_related('vendor').order_by('created_at')
         
         # Check if the current user is a vendor
-        from rbac.tprm_utils import RBACTPRMUtils
+        from tprm_backend.rbac.tprm_utils import RBACTPRMUtils
         user_id = RBACTPRMUtils.get_user_id_from_request(request)
         is_vendor = False
         
