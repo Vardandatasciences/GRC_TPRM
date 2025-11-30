@@ -16,6 +16,7 @@ urlpatterns = [
     # Custom API endpoints (old endpoints removed - using entity-data-row approach)
     path('statistics/', views.RiskStatisticsAPIView.as_view(), name='risk-statistics'),
     path('dashboard/', views.DashboardAPIView.as_view(), name='dashboard'),
+    path('modules/', views.ModulesAPIView.as_view(), name='modules'),
     # path('bcpdrp-integration/', views.BCPDRPIntegrationAPIView.as_view(), name='bcpdrp-integration'),  # Disabled
     
     # Entity-Data-Row endpoints

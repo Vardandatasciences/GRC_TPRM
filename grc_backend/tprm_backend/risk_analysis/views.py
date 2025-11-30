@@ -250,6 +250,39 @@ class DashboardAPIView(APIView):
 # BCPDRPIntegrationAPIView disabled - replaced by EntityRiskGenerationAPIView using entity-data-row approach
 
 
+class ModulesAPIView(APIView):
+    """API view for getting available modules (entities)"""
+    authentication_classes = [UnifiedJWTAuthentication]
+    permission_classes = [SimpleAuthenticatedPermission]
+    
+    def get(self, request):
+        """Get available modules (entities)"""
+        try:
+            entity_service = EntityDataService()
+            entities = entity_service.get_available_entities()
+            
+            # Transform entities to modules format for frontend compatibility
+            modules = []
+            for entity in entities:
+                modules.append({
+                    'module_id': hash(entity['code']) % 1000000,  # Generate simple ID from hash
+                    'name': entity['display_name'],
+                    'code': entity['code'],
+                    'description': f"{entity['display_name']} module with {entity['table_count']} tables",
+                    'table_count': entity.get('table_count', 0),
+                    'created_at': '2024-01-01T00:00:00Z',
+                    'updated_at': '2024-01-01T00:00:00Z'
+                })
+            
+            return Response(modules, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error getting modules: {e}")
+            return Response(
+                {'error': 'Failed to get modules', 'details': str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class EntityDataDropdownAPIView(APIView):
     """API view for entity-data-row dropdown functionality"""
     authentication_classes = [UnifiedJWTAuthentication]

@@ -1172,7 +1172,7 @@ const markPlanComplete = async () => {
 
   saving.value = true
   try {
-    await http.patch(`/api/bcpdrp/ocr/plans/${selectedPlan.value.plan_id}/status/`, {
+    await http.patch(`/bcpdrp/ocr/plans/${selectedPlan.value.plan_id}/status/`, {
       status: 'OCR_COMPLETED'
     })
     

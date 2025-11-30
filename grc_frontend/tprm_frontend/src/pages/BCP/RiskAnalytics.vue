@@ -713,7 +713,7 @@ import { PopupService } from '@/popup/popupService';
 import loggingService from '@/services/loggingService';
 
 // ===== INLINED API SERVICE =====
-const API_BASE_URL = 'http://localhost:8000/api';
+const API_BASE_URL = 'http://localhost:8000/api/tprm';
 
 interface Risk {
   id: string;

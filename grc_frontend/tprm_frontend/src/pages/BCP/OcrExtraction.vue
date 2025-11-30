@@ -656,7 +656,7 @@ const fetchPlans = async () => {
     if (filters.value.status) params.append('status', filters.value.status)
     
     const queryString = params.toString()
-    const url = queryString ? `/api/bcpdrp/ocr/plans/?${queryString}` : '/api/bcpdrp/ocr/plans/'
+    const url = queryString ? `/bcpdrp/ocr/plans/?${queryString}` : '/bcpdrp/ocr/plans/'
     
     const response = await http.get(url)
     plans.value = response.data.plans || []
@@ -671,7 +671,7 @@ const fetchPlans = async () => {
 // Fetch plan details
 const fetchPlanDetails = async (planId: number) => {
   try {
-    const response = await http.get(`/api/bcpdrp/ocr/plans/${planId}/`)
+    const response = await http.get(`/bcpdrp/ocr/plans/${planId}/`)
     selectedPlanData.value = response.data
     
     // Load existing extracted data if available
@@ -761,7 +761,7 @@ const getStatusColor = (status: string) => {
 
 const runOCR = async (planId: number) => {
   try {
-    await http.patch(`/api/bcpdrp/ocr/plans/${planId}/status/`, {
+    await http.patch(`/bcpdrp/ocr/plans/${planId}/status/`, {
       status: 'OCR_IN_PROGRESS'
     })
     PopupService.success('Document processing has been initiated', 'OCR Started')
@@ -807,7 +807,7 @@ const saveExtractedData = async () => {
       }
     })
     
-    await http.post(`/api/bcpdrp/ocr/plans/${selectedPlan.value}/extract/`, {
+    await http.post(`/bcpdrp/ocr/plans/${selectedPlan.value}/extract/`, {
       extracted_data: dataToSave
     })
     
@@ -833,7 +833,7 @@ const markOCRCompleted = async () => {
   if (!selectedPlan.value) return
   
   try {
-    await http.patch(`/api/bcpdrp/ocr/plans/${selectedPlan.value}/status/`, {
+    await http.patch(`/bcpdrp/ocr/plans/${selectedPlan.value}/status/`, {
       status: 'OCR_COMPLETED'
     })
     PopupService.success('Plan marked as ready for evaluation', 'OCR Completed')
@@ -854,7 +854,7 @@ const markOCRCompleted = async () => {
 
 const assignForEvaluation = async (planId: number) => {
   try {
-    await http.patch(`/api/bcpdrp/ocr/plans/${planId}/status/`, {
+    await http.patch(`/bcpdrp/ocr/plans/${planId}/status/`, {
       status: 'ASSIGNED_FOR_EVALUATION'
     })
     PopupService.success('Plan has been assigned to an evaluator', 'Assigned for Evaluation')
