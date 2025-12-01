@@ -743,22 +743,42 @@ export default {
     const fetchMyApprovals = async () => {
       isLoadingApprovals.value = true
       try {
+        // Check if token exists before making request
+        const token = localStorage.getItem('session_token')
+        if (!token) {
+          console.warn('No authentication token found. Please log in.')
+          assignedApprovals.value = []
+          return
+        }
+        
         // Admin view - fetch all approvals without user filtering
         const response = await withPermissionCheck(
-          () => slaApprovalApi.getAllApprovals(filters.value)
+          () => slaApprovalApi.getAllApprovals(filters.value),
+          { redirectOnError: false }
         )
         
         console.log('API Response for all approvals:', response)
         
-        if (response.success && response.data) {
+        if (response && response.success && response.data) {
           assignedApprovals.value = response.data
           console.log('All approvals set to:', assignedApprovals.value)
         } else {
-          console.error('Failed to fetch approvals:', response.message || 'Unknown error')
+          console.error('Failed to fetch approvals:', response?.message || 'Unknown error')
           assignedApprovals.value = []
         }
       } catch (error) {
         console.error('Error fetching all approvals:', error)
+        
+        // Handle authentication errors
+        if (error.status === 401 || error.code === 'AUTH_REQUIRED') {
+          console.warn('Authentication required. Redirecting to login...')
+          localStorage.removeItem('session_token')
+          localStorage.removeItem('current_user')
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login'
+          }
+        }
+        
         assignedApprovals.value = []
       } finally {
         isLoadingApprovals.value = false
@@ -768,17 +788,36 @@ export default {
     const fetchMyReviews = async () => {
       isLoadingReviews.value = true
       try {
+        // Check if token exists before making request
+        const token = localStorage.getItem('session_token')
+        if (!token) {
+          console.warn('No authentication token found. Please log in.')
+          reviewApprovals.value = []
+          return
+        }
+        
         // Admin view - fetch all reviews without user filtering
         const response = await slaApprovalApi.getAllReviews(filters.value)
         
-        if (response.success && response.data) {
+        if (response && response.success && response.data) {
           reviewApprovals.value = response.data
         } else {
-          console.error('Failed to fetch reviews:', response.message || 'Unknown error')
+          console.error('Failed to fetch reviews:', response?.message || 'Unknown error')
           reviewApprovals.value = []
         }
       } catch (error) {
         console.error('Error fetching all reviews:', error)
+        
+        // Handle authentication errors
+        if (error.status === 401 || error.code === 'AUTH_REQUIRED') {
+          console.warn('Authentication required. Redirecting to login...')
+          localStorage.removeItem('session_token')
+          localStorage.removeItem('current_user')
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login'
+          }
+        }
+        
         reviewApprovals.value = []
       } finally {
         isLoadingReviews.value = false

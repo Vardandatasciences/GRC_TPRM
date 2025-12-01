@@ -798,6 +798,7 @@ import { PopupService } from '@/popup/popupService'
 import { useNotifications } from '@/composables/useNotifications'
 import { usePermissions } from '@/composables/usePermissions'
 import loggingService from '@/services/loggingService'
+import { getTprmApiUrl } from '@/utils/backendEnv.js'
 
 const router = useRouter()
 const { showSLASuccess, showSLAError, showSLAWarning, showInfo } = useNotifications()
@@ -1248,6 +1249,14 @@ async function handleDocumentUpload() {
     try {
       console.log('Uploading document for OCR processing...')
       
+      // Get authentication token (using 'session_token' as the key)
+      const token = localStorage.getItem('session_token') || sessionStorage.getItem('session_token')
+      
+      if (!token) {
+        console.error('❌ No authentication token found in localStorage or sessionStorage')
+        throw new Error('Authentication token not found. Please log in and try again.')
+      }
+      
       // Create FormData for file upload
       const formData = new FormData()
       formData.append('file', file)
@@ -1259,8 +1268,12 @@ async function handleDocumentUpload() {
       formData.append('module_id', '1')
 
       // Upload document and process with OCR
-      const response = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
+      const uploadUrl = getTprmApiUrl('ocr/upload/')
+      const response = await fetch(uploadUrl, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData,
         // Don't set Content-Type header - let browser set it with boundary
       })

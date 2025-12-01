@@ -2,7 +2,8 @@
 Function-based views for BCP/DRP API with RBAC integration
 Following the pattern from rbac/example_views.py
 """
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.authentication import BaseAuthentication
@@ -31,6 +32,7 @@ from tprm_backend.audits_contract.models import ContractStaticQuestionnaire
 import logging
 import hashlib
 import os
+import traceback
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
@@ -242,6 +244,7 @@ def strategy_list_view(request):
 
 
 @api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 @authentication_classes([UnifiedJWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_bcp_drp_required('create_strategy')
@@ -306,30 +309,56 @@ def vendor_upload_view(request):
             # Frontend sends files with key format: file_${fileName}
             file_key = f"file_{file_name}"
             logger.info(f"Looking for file with key: {file_key}, fileName: {file_name}")
+            logger.info(f"Available file keys: {list(files.keys())}")
+            
             if file_key in files:
                 uploaded_file = files[file_key]
                 logger.info(f"Found file with key: {file_key}")
             else:
                 # Fallback: try to find by original filename
                 logger.info(f"File key {file_key} not found, trying fallback search")
-                for file_key, file_obj in files.items():
+                for key, file_obj in files.items():
                     if file_obj.name == file_name:
                         uploaded_file = file_obj
-                        logger.info(f"Found file with fallback: {file_key}")
+                        logger.info(f"Found file with fallback: {key}")
                         break
             
             if not uploaded_file:
                 logger.warning(f"File not found for document: {file_name}")
+                logger.warning(f"Available files: {[(k, f.name if hasattr(f, 'name') else str(f)) for k, f in files.items()]}")
                 continue
             
-            # Validate file type
+            # Read file content once for both saving and hashing
+            try:
+                uploaded_file.seek(0)  # Reset file pointer to beginning if possible
+            except (AttributeError, OSError):
+                # File object doesn't support seeking, that's okay - read it fresh
+                pass
+            file_content = uploaded_file.read()
+            
+            # Validate file type - check content_type or infer from extension
+            content_type = uploaded_file.content_type
+            if not content_type:
+                # Infer content type from extension if not provided
+                file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+                if file_extension == '.pdf':
+                    content_type = 'application/pdf'
+                elif file_extension == '.doc':
+                    content_type = 'application/msword'
+                elif file_extension == '.docx':
+                    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                else:
+                    content_type = 'unknown'
+            
             allowed_types = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
-            if uploaded_file.content_type not in allowed_types:
+            if content_type not in allowed_types:
+                logger.error(f"Invalid file type: {content_type} for file: {uploaded_file.name}")
                 return error_response(f"Invalid file type for {uploaded_file.name}. Only PDF, DOC, and DOCX files are allowed.", status.HTTP_400_BAD_REQUEST)
             
             # Validate file size (max 10MB)
             max_size = 10 * 1024 * 1024  # 10MB
-            if uploaded_file.size > max_size:
+            file_size = uploaded_file.size if hasattr(uploaded_file, 'size') and uploaded_file.size else len(file_content)
+            if file_size > max_size:
                 return error_response(f"File {uploaded_file.name} is too large. Maximum size is 10MB.", status.HTTP_400_BAD_REQUEST)
             
             # Generate file path
@@ -337,12 +366,10 @@ def vendor_upload_view(request):
             storage_file_name = f"vendor_{vendor_id}_{strategy_id}_{uploaded_file.name}"
             file_path = f"uploads/plans/{storage_file_name}"
             
-            # Save file to storage
-            saved_path = default_storage.save(file_path, ContentFile(uploaded_file.read()))
+            # Save file to storage using the already-read content
+            saved_path = default_storage.save(file_path, ContentFile(file_content))
             
-            # Calculate file hash
-            uploaded_file.seek(0)  # Reset file pointer
-            file_content = uploaded_file.read()
+            # Calculate file hash using the already-read content
             sha256_hash = hashlib.sha256(file_content).hexdigest()
             
             # Get next plan_id
@@ -359,9 +386,9 @@ def vendor_upload_view(request):
                 plan_name=doc_data.get('planName', ''),
                 version='1.0',
                 file_uri=saved_path,
-                mime_type=uploaded_file.content_type,
+                mime_type=content_type,
                 sha256_checksum=sha256_hash,
-                size_bytes=uploaded_file.size,
+                size_bytes=file_size,
                 plan_scope=doc_data.get('scope', ''),
                 criticality=doc_data.get('criticality', 'MEDIUM'),
                 status='SUBMITTED',
@@ -375,6 +402,9 @@ def vendor_upload_view(request):
                 'status': plan.status
             })
         
+        if not created_plans:
+            return error_response("No documents were successfully uploaded. Please check that files are attached correctly.", status.HTTP_400_BAD_REQUEST)
+        
         return success_response({
             'message': f'Successfully uploaded {len(created_plans)} document(s)',
             'strategy_name': strategy_name,
@@ -383,8 +413,10 @@ def vendor_upload_view(request):
         }, status.HTTP_201_CREATED)
         
     except Exception as e:
+        error_traceback = traceback.format_exc()
         logger.error(f"Error uploading vendor documents: {str(e)}")
-        return error_response("Failed to upload documents", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(f"Traceback: {error_traceback}")
+        return error_response(f"Failed to upload documents: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # =============================================================================
@@ -1691,16 +1723,18 @@ def approval_assignment_create_view(request):
         no_approval_needed = data.get('no_approval_needed', False)
         
         # If no approval needed, ensure assigner and assignee are the same
-        if no_approval_needed and data.get('assigner_id') != data.get('assignee_id'):
-            return validation_error_response("When 'no approval needed' is checked, assigner and assignee must be the same")
+        # Set assignee to assigner if not provided
+        if no_approval_needed:
+            if not data.get('assignee_id'):
+                data['assignee_id'] = data.get('assigner_id')
+            if not data.get('assignee_name'):
+                data['assignee_name'] = data.get('assigner_name')
+            if data.get('assigner_id') != data.get('assignee_id'):
+                return validation_error_response("When 'no approval needed' is checked, assigner and assignee must be the same")
         
         # Validate required fields
         required_fields = ['workflow_name', 'plan_type', 'assigner_id', 'assigner_name', 
-                          'object_type', 'object_id', 'due_date']
-        
-        # Only require assignee if no_approval_needed is False
-        if not no_approval_needed:
-            required_fields.extend(['assignee_id', 'assignee_name'])
+                          'object_type', 'object_id', 'due_date', 'assignee_id', 'assignee_name']
         
         for field in required_fields:
             if not data.get(field):
@@ -1709,11 +1743,14 @@ def approval_assignment_create_view(request):
         # Validate user IDs exist
         try:
             assigner = Users.objects.get(user_id=data['assigner_id'])
-            # Only validate assignee if provided
-            if data.get('assignee_id'):
-                assignee = Users.objects.get(user_id=data['assignee_id'])
-        except Users.DoesNotExist:
+            # Always validate assignee (it's required by the model)
+            assignee = Users.objects.get(user_id=data['assignee_id'])
+        except Users.DoesNotExist as e:
+            logger.error(f"User not found: {str(e)}")
             return validation_error_response("Invalid assigner or assignee user ID")
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid user ID format: {str(e)}")
+            return validation_error_response("Invalid assigner or assignee user ID format")
         
         # Validate object type
         valid_object_types = ['PLAN', 'QUESTIONNAIRE', 'ASSIGNMENT_RESPONSE']
@@ -1729,15 +1766,39 @@ def approval_assignment_create_view(request):
         max_workflow_id = BcpDrpApprovals.objects.aggregate(max_id=models.Max('workflow_id'))['max_id']
         next_workflow_id = (max_workflow_id or 0) + 1
         
-        # Parse and convert due_date to timezone-aware datetime
+        # Parse and convert due_date to naive datetime (MySQL with USE_TZ=False doesn't support timezone-aware)
         due_date_str = data['due_date']
         try:
-            # Parse the datetime string from the frontend (format: "2025-10-02T08:35")
-            due_date_naive = datetime.fromisoformat(due_date_str)
-            # Make it timezone-aware
-            due_date = timezone.make_aware(due_date_naive)
+            # Parse the datetime string from the frontend (format: "2025-10-02T08:35" or "2025-10-02T08:35:00")
+            # Handle both with and without seconds
+            if 'T' in due_date_str:
+                # ISO format with time
+                if due_date_str.count(':') == 1:
+                    # Format: "2025-10-02T08:35" - add seconds
+                    due_date_str = due_date_str + ':00'
+                
+                # Remove timezone info if present (Z or +00:00 or -05:00)
+                if 'Z' in due_date_str:
+                    due_date_str = due_date_str.replace('Z', '')
+                elif '+' in due_date_str:
+                    due_date_str = due_date_str.split('+')[0]
+                elif due_date_str.count('-') > 2:  # Has timezone offset like -05:00
+                    # Split by last '-' and take everything before it
+                    parts = due_date_str.rsplit('-', 1)
+                    if ':' in parts[-1]:  # Last part is timezone offset
+                        due_date_str = parts[0]
+                
+                due_date = datetime.fromisoformat(due_date_str)
+            else:
+                # Date only format
+                due_date = datetime.fromisoformat(due_date_str)
+            
+            # Ensure it's naive (not timezone-aware) for MySQL backend
+            if timezone.is_aware(due_date):
+                due_date = timezone.make_naive(due_date)
         except (ValueError, TypeError) as e:
-            return validation_error_response(f"Invalid due_date format: {due_date_str}")
+            logger.error(f"Error parsing due_date '{due_date_str}': {str(e)}")
+            return validation_error_response(f"Invalid due_date format: {due_date_str}. Expected format: YYYY-MM-DDTHH:MM")
         
         # Create approval assignment
         approval = BcpDrpApprovals.objects.create(
@@ -1778,8 +1839,11 @@ def approval_assignment_create_view(request):
         }, status.HTTP_201_CREATED)
         
     except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
         logger.error(f"Error creating approval assignment: {str(e)}")
-        return error_response("Failed to create approval assignment", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(f"Traceback: {error_traceback}")
+        return error_response(f"Failed to create approval assignment: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 def auto_approve_object(approval):
@@ -2096,7 +2160,8 @@ def questionnaire_assignment_save_answers_view(request, assignment_id):
     """
     try:
         # Get assignment data from request
-        data = json.loads(request.body)
+        # Use request.data instead of request.body when using DRF's @api_view decorator
+        data = request.data
         logger.info(f"Saving answers for assignment {assignment_id}: {data}")
         
         # Validate required fields
@@ -2245,8 +2310,10 @@ def questionnaire_assignment_save_answers_view(request, assignment_id):
     except json.JSONDecodeError:
         return error_response("Invalid JSON data", status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.error(f"Error saving assignment answers: {str(e)}")
-        return error_response("Failed to save answers", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(f"Error saving assignment answers: {str(e)}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return error_response(f"Failed to save answers: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @csrf_exempt
@@ -2260,7 +2327,8 @@ def questionnaire_assignment_create_view(request):
         logger.info("Creating questionnaire assignment")
         
         # Get assignment data from request
-        data = json.loads(request.body)
+        # Use request.data instead of request.body when using DRF's @api_view decorator
+        data = request.data
         logger.info(f"Assignment data: {data}")
         
         # Validate required fields
@@ -2273,9 +2341,11 @@ def questionnaire_assignment_create_view(request):
         assigned_by_user_id = data.get('assigned_by_user_id', 1)
         
         # Get all questions for the questionnaire to create a single assignment record with JSON data
-        # Use default database connection to access test_questions table
+        # Use tprm database connection to access test_questions table (in tprm_integration database)
         from django.db import connections
-        with connections['default'].cursor() as cursor:
+        # Try to use 'tprm' connection if available, otherwise fall back to 'default'
+        db_connection = 'tprm' if 'tprm' in connections else 'default'
+        with connections[db_connection].cursor() as cursor:
             cursor.execute("""
                 SELECT question_id, question_text, answer_type, is_required
                 FROM test_questions 

@@ -705,7 +705,7 @@ def contract_create(request):
         if contract.status == 'UNDER_REVIEW':
             try:
                 from contracts.contractapproval.serializers import ContractApprovalCreateAssignmentSerializer
-                from contracts.models import ContractApproval
+                from .models import ContractApproval
                 
                 # Create approval data
                 approval_data = {
@@ -2096,7 +2096,7 @@ def time_to_approve_contract_kpi(request):
         
         from django.db.models import Avg, F, ExpressionWrapper, DurationField
         from django.db.models.functions import ExtractMonth, ExtractYear
-        from contracts.models import ContractApproval
+        from .models import ContractApproval
         from datetime import datetime
         
         # Get year parameter (default to current year)
@@ -3845,7 +3845,7 @@ def users_list(request):
             }, status=429)
         
         # Get all users from custom User model
-        from mfa_auth.models import User
+        from tprm_backend.mfa_auth.models import User
         users = User.objects.all().order_by('userid')
         
         logger.info(f"Found {users.count()} users in database")
@@ -3896,7 +3896,7 @@ def legal_reviewers_list(request):
             }, status=429)
         
         # Get all users from custom User model (since RBAC is removed, all users can be legal reviewers)
-        from mfa_auth.models import User
+        from tprm_backend.mfa_auth.models import User
         users = User.objects.all().order_by('userid')
         
         logger.info(f"Found {users.count()} users for legal reviewers")

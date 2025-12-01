@@ -9,9 +9,24 @@ const api = axios.create({
   },
 })
 
-// Add request interceptor to prevent infinite retries
+// Helper to get token from any of the storage keys
+function getStoredToken() {
+  const keys = ['session_token', 'token', 'access_token', 'jwt_token']
+  for (const key of keys) {
+    const val = localStorage.getItem(key)
+    if (val) return val
+  }
+  return null
+}
+
+// Add request interceptor to add JWT authentication
 api.interceptors.request.use(
   (config) => {
+    // Add JWT token from localStorage (check multiple keys for compatibility)
+    const token = getStoredToken()
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
     return config
   },
   (error) => {

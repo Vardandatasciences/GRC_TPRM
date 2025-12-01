@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 from django.utils import timezone
 from django.db.models import Q, Count, Avg
 from django.core.paginator import Paginator
@@ -31,7 +32,8 @@ class JWTAuthentication(BaseAuthentication):
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
-            return None
+            # No token provided - raise AuthenticationFailed to return 401
+            raise AuthenticationFailed('Authentication credentials were not provided.')
         
         try:
             token = auth_header.split(' ')[1]
@@ -41,14 +43,12 @@ class JWTAuthentication(BaseAuthentication):
             user_id = payload.get('user_id')
             
             if user_id:
+                # Try to import User model
                 try:
                     from mfa_auth.models import User
-                    user = User.objects.get(userid=user_id)
-                    # Add is_authenticated attribute for DRF compatibility
-                    user.is_authenticated = True
-                    return (user, token)
-                except (User.DoesNotExist, ImportError):
-                    # If User model doesn't exist or user not found, create a mock user
+                except ImportError:
+                    # If User model import fails, create a mock user
+                    logger.warning(f"User model import failed, creating mock user for user_id: {user_id}")
                     class MockUser:
                         def __init__(self, user_id):
                             self.userid = user_id
@@ -56,15 +56,37 @@ class JWTAuthentication(BaseAuthentication):
                             self.is_authenticated = True
                     
                     return (MockUser(user_id), token)
+                
+                # If import succeeded, try to get the user
+                try:
+                    user = User.objects.get(userid=user_id)
+                    # Add is_authenticated attribute for DRF compatibility
+                    user.is_authenticated = True
+                    return (user, token)
+                except User.DoesNotExist:
+                    # If user not found, create a mock user
+                    logger.warning(f"User not found for user_id {user_id}, creating mock user")
+                    class MockUser:
+                        def __init__(self, user_id):
+                            self.userid = user_id
+                            self.username = f"user_{user_id}"
+                            self.is_authenticated = True
+                    
+                    return (MockUser(user_id), token)
+            else:
+                raise AuthenticationFailed('Invalid token: user_id not found in token payload.')
         except jwt.ExpiredSignatureError:
             logger.warning("JWT token expired")
-            return None
-        except jwt.InvalidTokenError:
-            logger.warning("Invalid JWT token")
-            return None
+            raise AuthenticationFailed('Token has expired.')
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"Invalid JWT token: {str(e)}")
+            raise AuthenticationFailed('Invalid token.')
+        except AuthenticationFailed:
+            # Re-raise AuthenticationFailed exceptions
+            raise
         except Exception as e:
             logger.error(f"JWT authentication error: {str(e)}")
-            return None
+            raise AuthenticationFailed(f'Authentication failed: {str(e)}')
 
 
 class SimpleAuthenticatedPermission(BasePermission):

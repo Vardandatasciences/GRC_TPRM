@@ -45,7 +45,7 @@ class JWTAuthentication(BaseAuthentication):
             
             if user_id:
                 try:
-                    from mfa_auth.models import User
+                    from tprm_backend.mfa_auth.models import User
                     user = User.objects.get(userid=user_id)
                     # Add is_authenticated attribute for DRF compatibility
                     user.is_authenticated = True
@@ -599,7 +599,7 @@ def get_contract_approvals(request):
 
 
 @api_view(['GET'])
-@authentication_classes([JWTAuthentication])
+@authentication_classes([UnifiedJWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 def get_assigner_approvals(request):
     """

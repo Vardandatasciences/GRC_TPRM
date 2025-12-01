@@ -57,8 +57,18 @@ class RBACTPRMUtils:
         override_sources = []
         if hasattr(request, 'GET'):
             override_sources.append(request.GET)
-        if hasattr(request, 'POST') and isinstance(getattr(request, 'POST', None), dict):
-            override_sources.append(request.POST)
+        # Safely check request.POST - handle both Django and DRF request objects
+        # For multipart/form-data, request.POST is a QueryDict, not a dict
+        try:
+            if hasattr(request, 'POST'):
+                post_data = request.POST
+                # Check if it's a dict-like object (QueryDict, dict, etc.)
+                if hasattr(post_data, 'get') or isinstance(post_data, dict):
+                    override_sources.append(post_data)
+        except Exception as e:
+            # If accessing POST fails (e.g., unsupported media type), skip it
+            # We'll rely on JWT token from headers instead
+            logger.debug(f"[RBAC TPRM] Could not access request.POST (likely multipart/form-data): {e}")
         
         override_user_id = None
         override_username = None
