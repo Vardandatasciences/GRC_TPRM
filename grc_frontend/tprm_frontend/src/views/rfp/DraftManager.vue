@@ -199,10 +199,13 @@ import PopupModal from '@/popup/PopupModal.vue'
 import { PopupService } from '@/popup/popupService'
 import loggingService from '@/services/loggingService'
 import { rfpUseToast } from '@/composables/rfpUseToast.js'
+import { useRfpApi } from '@/composables/useRfpApi'
+import { getTprmApiUrl } from '@/utils/backendEnv'
 
-const API_BASE_URL = 'http://localhost:8000/api/tprm/rfp'
+const API_BASE_URL = getTprmApiUrl('rfp')
 const { success, error } = rfpUseToast()
 const router = useRouter()
+const { getAuthHeaders } = useRfpApi()
 
 const selectedDraft = ref(null)
 const drafts = ref([])
@@ -218,7 +221,8 @@ const loadServerDrafts = async () => {
     const response = await axios.get(`${API_BASE_URL}/rfps/`, {
       params: {
         status: 'DRAFT'
-      }
+      },
+      headers: getAuthHeaders()
     })
     
     console.log('✅ Received draft RFPs:', response.data)
@@ -334,7 +338,9 @@ const editDraft = async (draft: any) => {
     try {
       // Fetch full RFP details including evaluation criteria
       console.log('📥 Fetching full RFP details for editing...')
-      const response = await axios.get(`${API_BASE_URL}/rfps/${draft.id}/`)
+      const response = await axios.get(`${API_BASE_URL}/rfps/${draft.id}/`, {
+        headers: getAuthHeaders()
+      })
       const fullRfpData = response.data
       
       console.log('✅ Full RFP data fetched:', fullRfpData)
@@ -364,6 +370,8 @@ const publishDraft = async (draft: any) => {
     try {
       const response = await axios.patch(`${API_BASE_URL}/rfps/${draft.id}/`, {
         status: 'IN_REVIEW'
+      }, {
+        headers: getAuthHeaders()
       })
       
       success('Draft Published', `RFP "${draft.title}" has been moved to review status.`)
@@ -400,7 +408,9 @@ const deleteDraft = async (draft: any) => {
       'Confirm Deletion',
       async () => {
         try {
-          await axios.delete(`${API_BASE_URL}/rfps/${draft.id}/`)
+          await axios.delete(`${API_BASE_URL}/rfps/${draft.id}/`, {
+            headers: getAuthHeaders()
+          })
           
           success('Draft Deleted', `RFP "${draft.title}" has been deleted successfully.`)
           

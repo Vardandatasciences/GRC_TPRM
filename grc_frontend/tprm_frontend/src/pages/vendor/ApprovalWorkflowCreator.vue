@@ -1250,6 +1250,7 @@ import notificationService from '@/services/notificationService'
 import { useVendorPermissions } from '@/composables/useVendorPermissions'
 import AccessDenied from '@/components/AccessDenied.vue'
 import permissionsService from '@/services/permissionsService'
+import { getTprmApiUrl } from '@/utils/backendEnv'
 
 export default {
   name: 'ComprehensiveWorkflowCreator',
@@ -1260,6 +1261,9 @@ export default {
   setup() {
     const route = useRoute()
     const { showSuccess, showError, showWarning, showInfo } = useNotifications()
+    
+    // API base URL for vendor-approval endpoints
+    const VENDOR_APPROVAL_API_BASE_URL = getTprmApiUrl('vendor-approval')
     
     // Initialize RBAC permissions
     const { permissions, showDeniedAlert } = useVendorPermissions()
@@ -1572,7 +1576,7 @@ export default {
     const fetchUsers = async () => {
       try {
         loadingUsers.value = true
-        const response = await api.get('/api/v1/vendor-approval/users/')
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/users/`)
         users.value = response.data
       } catch (error) {
         console.error('Error fetching users:', error)
@@ -1791,7 +1795,7 @@ export default {
         
         console.log('Submitting comprehensive workflow:', submitData)
         
-        const response = await api.post('/api/v1/vendor-approval/create-workflow-request/', submitData)
+        const response = await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/create-workflow-request/`, submitData)
         
         createdWorkflowId.value = response.data.workflow_id
         createdRequestId.value = response.data.approval_id
@@ -1913,7 +1917,7 @@ export default {
     const fetchQuestionnaires = async () => {
       try {
         loadingQuestionnaires.value = true
-        const response = await api.get('/api/v1/vendor-approval/questionnaires/active/')
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/questionnaires/active/`)
         
         // Ensure we have proper data structure
         if (response.data && Array.isArray(response.data)) {
@@ -2090,7 +2094,7 @@ export default {
     const fetchVendors = async () => {
       try {
         loadingVendors.value = true
-        const response = await api.get('/api/v1/vendor-approval/vendors/')
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/`)
         vendors.value = response.data.vendors || []
         
         if (vendors.value.length === 0) {
@@ -2121,8 +2125,8 @@ export default {
         
         // Fetch detailed vendor information and risks in parallel
         const [vendorResponse, risksResponse] = await Promise.all([
-          api.get(`/api/v1/vendor-approval/vendors/${vendorId}/`),
-          api.get(`/api/v1/vendor-approval/vendors/${vendorId}/risks/`)
+          api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/${vendorId}/`),
+          api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/${vendorId}/risks/`)
         ])
         
         selectedVendorData.value = vendorResponse.data
@@ -2183,7 +2187,7 @@ export default {
       try {
         loadingQuestionnaireAssignments.value = true
         // This endpoint now returns questionnaires with status='RESPONDED'
-        const response = await api.get('/api/v1/vendor-approval/questionnaire-assignments/submitted/')
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/questionnaire-assignments/submitted/`)
         
         // Process the response data
         if (response.data && response.data.assignments) {

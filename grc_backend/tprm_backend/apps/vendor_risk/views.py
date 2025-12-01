@@ -197,6 +197,8 @@ class VendorRisksAPIView(APIView):
     @rbac_vendor_required('ViewRiskProfile')
     def get(self, request):
         """Get vendor risks with filtering"""
+        data_query = None  # Initialize to avoid UnboundLocalError
+        params = []  # Initialize to avoid UnboundLocalError
         try:
             # Get query parameters
             page = int(request.query_params.get('page', 1))
@@ -212,7 +214,6 @@ class VendorRisksAPIView(APIView):
             
             # Build WHERE clause - always filter by data='temp_vendor'
             where_conditions = ["entity IN ('vendor', 'vendor_management')", "`data` = 'temp_vendor'"]
-            params = []
             
             # Add filters
             if priority and priority != 'All':
@@ -259,7 +260,7 @@ class VendorRisksAPIView(APIView):
             logger.info(f"WHERE clause: {where_clause}")
             logger.info(f"SQL parameters: {params}")
             
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
                 # First, log what data we have in the database
                 cursor.execute("SELECT DISTINCT `data`, COUNT(*) as cnt FROM risk_tprm GROUP BY `data`")
                 db_data_types = cursor.fetchall()
@@ -402,7 +403,7 @@ class VendorListAPIView(APIView):
     def get(self, request):
         """Get list of vendors prioritizing temp_vendor (for risk filtering) with fallback to main vendors table"""
         try:
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
                 vendors = []
                 vendor_ids_seen = set()
                 
@@ -442,6 +443,7 @@ class VendorListAPIView(APIView):
                             business_type, industry_sector, vendor_category_id,
                             risk_level, status, is_critical_vendor,
                             created_at, updated_at
+                        FROM vendors
                         ORDER BY company_name ASC
                     """)
                     
@@ -523,7 +525,7 @@ class VendorRiskDebugAPIView(APIView):
         try:
             vendor_id = request.query_params.get('vendor_id', '10')
             
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
                 # Check temp_vendor table
                 cursor.execute("SELECT id, company_name FROM temp_vendor WHERE id = %s", [vendor_id])
                 vendor_data = cursor.fetchone()

@@ -896,11 +896,15 @@ import notificationService from '@/services/notificationService'
 import loggingService from '@/services/loggingService'
 import { useAuthStore } from '@/stores/auth_vendor'
 import { useVendorPermissions } from '@/composables/useVendorPermissions'
+import { getTprmApiUrl } from '@/utils/backendEnv'
 
 const { showSuccess, showError, showWarning, showInfo } = useNotifications()
 // Initialize router and auth store
 const router = useRouter()
 const authStore = useAuthStore()
+
+// API base URL for vendor-core endpoints
+const VENDOR_CORE_API_BASE_URL = getTprmApiUrl('vendor-core')
 
 // Initialize RBAC permissions
 const { permissions, canPerformAction, showDeniedAlert } = useVendorPermissions()
@@ -1088,7 +1092,8 @@ const vendor_fetchUserData = async () => {
       headers['Authorization'] = `Bearer ${token}`
     }
     
-    const response = await fetch(`http://localhost:8000/api/v1/vendor-core/temp-vendors/get_user_data/?user_id=${userId}`, {
+    // Use correct API endpoint: /api/tprm/vendor-core/ (not /api/v1/vendor-core/)
+    const response = await fetch(`${VENDOR_CORE_API_BASE_URL}/temp-vendors/get_user_data/?user_id=${userId}`, {
       headers
     })
     
@@ -1375,7 +1380,7 @@ const vendor_saveDocument = async (id) => {
       formData.append('user_id', vendor_formData.user_id.toString())
       
       const token = localStorage.getItem('session_token')
-      const response = await fetch('http://localhost:8000/api/v1/vendor-core/temp-vendors/upload_document/', {
+      const response = await fetch(`${VENDOR_CORE_API_BASE_URL}/temp-vendors/upload_document/`, {
         method: 'POST',
         body: formData,
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -1546,7 +1551,7 @@ const vendor_submitRegistration = async () => {
       headers['Authorization'] = `Bearer ${token}`
     }
     
-    const response = await fetch('http://localhost:8000/api/v1/vendor-core/temp-vendors/vendor_submit_registration/', {
+    const response = await fetch(`${VENDOR_CORE_API_BASE_URL}/temp-vendors/vendor_submit_registration/`, {
       method: 'POST',
       headers,
       body: JSON.stringify(submissionData)
@@ -1734,7 +1739,7 @@ const vendor_saveDraft = async () => {
         headers['Authorization'] = `Bearer ${token}`
       }
       
-      response = await fetch(`http://localhost:8000/api/v1/vendor-core/temp-vendors/${vendor_formData.temp_vendor_id}/`, {
+      response = await fetch(`${VENDOR_CORE_API_BASE_URL}/temp-vendors/${vendor_formData.temp_vendor_id}/`, {
         method: 'PUT',
         headers,
         body: JSON.stringify(vendor_draftData)
@@ -1769,7 +1774,7 @@ const vendor_saveDraft = async () => {
         headers['Authorization'] = `Bearer ${token}`
       }
       
-      response = await fetch('http://localhost:8000/api/v1/vendor-core/temp-vendors/', {
+      response = await fetch(`${VENDOR_CORE_API_BASE_URL}/temp-vendors/`, {
         method: 'POST',
         headers,
         body: JSON.stringify(vendor_draftData)

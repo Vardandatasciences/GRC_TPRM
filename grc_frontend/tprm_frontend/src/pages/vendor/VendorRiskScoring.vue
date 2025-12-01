@@ -854,9 +854,10 @@ import { Download, RotateCcw, Search, Shield, ChevronDown, Check, RefreshCw, Bra
 import { useNotifications } from '@/composables/useNotifications';
 import notificationService from '@/services/notificationService';
 import loggingService from '@/services/loggingService';
+import { getTprmApiUrl } from '@/utils/backendEnv';
 
 // ===== INLINED API SERVICE =====
-const API_BASE_URL = 'http://localhost:8000/api/v1/vendor-risk';
+const API_BASE_URL = getTprmApiUrl('vendor-risk');
 
 // ===== DATA STRUCTURES =====
 // Risk object structure

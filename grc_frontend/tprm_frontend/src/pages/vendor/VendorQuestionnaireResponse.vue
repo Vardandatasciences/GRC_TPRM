@@ -373,8 +373,12 @@ import { useNotifications } from '@/composables/useNotifications'
 import notificationService from '@/services/notificationService'
 import loggingService from '@/services/loggingService'
 import permissionsService from '@/services/permissionsService'
+import { getTprmApiUrl } from '@/utils/backendEnv'
 
 const { showSuccess, showError, showWarning, showInfo } = useNotifications()
+
+// API base URL for vendor-questionnaire endpoints
+const VENDOR_QUESTIONNAIRE_API_BASE_URL = getTprmApiUrl('vendor-questionnaire')
 
 // Reactive data
 const vendorAssignments = ref([])
@@ -424,7 +428,7 @@ const getVendorIdForUser = async (userId) => {
     
     // Try the get_user_data endpoint first
     try {
-      const response = await apiCall(`/api/v1/vendor-core/temp-vendors/get_user_data/?user_id=${userId}`)
+      const response = await apiCall(`${getTprmApiUrl('vendor-core')}/temp-vendors/get_user_data/?user_id=${userId}`)
       console.log('Temp vendor API response:', response)
       console.log('Response data structure:', {
         hasData: !!response.data,
@@ -495,7 +499,7 @@ const getVendorIdForUser = async (userId) => {
     // Try alternative: search temp_vendors by userid
     try {
       console.log('🔍 Trying alternative lookup: search temp_vendors by userid...')
-      const searchResponse = await apiCall(`/api/v1/vendor-core/temp-vendors/?userid=${userId}`)
+      const searchResponse = await apiCall(`${getTprmApiUrl('vendor-core')}/temp-vendors/?userid=${userId}`)
       console.log('Search response:', searchResponse)
       
       if (searchResponse.data && Array.isArray(searchResponse.data) && searchResponse.data.length > 0) {
@@ -603,9 +607,9 @@ const loadVendorAssignments = async () => {
   try {
     console.log('=== VENDOR ASSIGNMENTS DEBUG ===')
     console.log('Loading vendor assignments for vendor ID:', currentVendorId.value)
-    console.log('API URL:', `/api/v1/vendor-questionnaire/responses/get_vendor_assignments/?vendor_id=${currentVendorId.value}`)
+    console.log('API URL:', `${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/get_vendor_assignments/?vendor_id=${currentVendorId.value}`)
     
-    const response = await apiCall(`/api/v1/vendor-questionnaire/responses/get_vendor_assignments/?vendor_id=${currentVendorId.value}`)
+    const response = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/get_vendor_assignments/?vendor_id=${currentVendorId.value}`)
     console.log('Vendor assignments API response:', response)
     console.log('Response data:', response.data)
     console.log('Response status:', response.status)
@@ -619,7 +623,7 @@ const loadVendorAssignments = async () => {
       console.log('=== NO ASSIGNMENTS FOUND - DEBUGGING ===')
       console.log('No assignments found, trying to get all assignments for debugging...')
       try {
-        const allAssignmentsResponse = await apiCall('/api/v1/vendor-questionnaire/assignments/')
+        const allAssignmentsResponse = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/assignments/`)
         console.log('All assignments in database:', allAssignmentsResponse)
         console.log('All assignments data:', allAssignmentsResponse.data)
         
@@ -680,7 +684,7 @@ const loadAssignmentQuestions = async () => {
   }
   
   try {
-    const response = await apiCall(`/api/v1/vendor-questionnaire/responses/get_assignment_responses/?assignment_id=${selectedAssignmentId.value}`)
+    const response = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/get_assignment_responses/?assignment_id=${selectedAssignmentId.value}`)
     assignmentData.value = response.data.assignment
     responses.value = response.data.responses
     isLocked.value = response.data.assignment.is_locked || false
@@ -994,7 +998,7 @@ const handleFileUpload = async (questionId, event) => {
     console.log('Sending request to S3 backend...')
     
     // Upload files to S3 via backend
-    const response = await apiCall('/api/v1/vendor-questionnaire/responses/upload_files/', {
+    const response = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/upload_files/`, {
       method: 'POST',
       data: formData
       // Note: Don't set Content-Type header for FormData - browser sets it automatically with boundary
@@ -1064,7 +1068,7 @@ const removeFile = async (questionId, fileName) => {
       if (fileToRemove && fileToRemove.s3_file_id) {
         try {
           // Call backend to remove file from S3
-          const response = await apiCall('/api/v1/vendor-questionnaire/responses/remove_file/', {
+          const response = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/remove_file/`, {
             method: 'DELETE',
             data: {
               assignment_id: selectedAssignmentId.value,
@@ -1115,7 +1119,7 @@ const saveResponses = async (showMessage = true) => {
       vendor_comment: r.vendor_comment
     }))
     
-    await apiCall('/api/v1/vendor-questionnaire/responses/save_responses/', {
+    await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/save_responses/`, {
       method: 'POST',
       data: {
         assignment_id: selectedAssignmentId.value,
@@ -1198,7 +1202,7 @@ const performSubmit = async () => {
     await saveResponses(false)
     
     // Then submit final responses to lock the assignment
-    const response = await apiCall('/api/v1/vendor-questionnaire/responses/submit_final_responses/', {
+    const response = await apiCall(`${VENDOR_QUESTIONNAIRE_API_BASE_URL}/responses/submit_final_responses/`, {
       method: 'POST',
       data: {
         assignment_id: selectedAssignmentId.value

@@ -86,7 +86,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
             if temp_vendor.vendor_code:
 
-                with connections['default'].cursor() as cursor:
+                with connections['tprm'].cursor() as cursor:
 
                     cursor.execute("SELECT vendor_id FROM tprm_integration.vendors WHERE vendor_code = %s", [temp_vendor.vendor_code])
 
@@ -166,7 +166,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
             # Insert into main vendors table
 
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
 
                 # Build the INSERT query dynamically
 
@@ -248,7 +248,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
                             # Insert contact
 
-                            with connections['default'].cursor() as cursor:
+                            with connections['tprm'].cursor() as cursor:
 
                                 contact_columns = list(contact_data.keys())
 
@@ -336,7 +336,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
                             # Insert document
 
-                            with connections['default'].cursor() as cursor:
+                            with connections['tprm'].cursor() as cursor:
 
                                 doc_columns = list(document_data.keys())
 
@@ -512,7 +512,7 @@ def create_approval_version(approval_id, version_type, version_label, json_paylo
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get the maximum version number to ensure proper incrementation
 
@@ -618,7 +618,7 @@ def create_approval_version(approval_id, version_type, version_label, json_paylo
 
             
             # CRITICAL: Commit the transaction to persist the version changes
-            connections['default'].commit()
+            connections['tprm'].commit()
             
             print(f"✓ Version created and committed: {version_id} (v{next_version_number})")
             print(f"  - Approval ID: {approval_id}")
@@ -661,7 +661,7 @@ def check_sequential_approval_ready(approval_id, stage_order):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get workflow type
 
@@ -757,7 +757,7 @@ def get_my_approvals(request):
 
 
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             if include_statuses:
 
@@ -989,7 +989,7 @@ def get_stage_reviewers(request):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute(
 
@@ -1047,7 +1047,7 @@ def get_user_assigned_stages(request, user_id):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute(
 
@@ -1163,7 +1163,7 @@ def post_stage_action(request, stage_id):
 
 
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get current stage + related info + workflow type
 
@@ -1671,7 +1671,7 @@ def post_stage_action(request, stage_id):
 
 
 
-        connection.commit()
+        connections['tprm'].commit()
 
         return Response({'message': 'Action processed successfully'}, status=status.HTTP_200_OK)
 
@@ -1707,7 +1707,7 @@ def get_questionnaire_questions(request, questionnaire_id: int):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute(
 
@@ -1823,7 +1823,7 @@ def get_approvals_by_requester(request):
 
 
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             sql = (
 
@@ -1951,7 +1951,7 @@ def get_users(request):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("""
 
@@ -2075,7 +2075,7 @@ def get_request_with_stages(request, approval_id: str):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get the approval request with workflow info
 
@@ -2319,7 +2319,7 @@ def requester_final_decision(request, approval_id: str):
 
 
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("SELECT workflow_id, overall_status, request_data FROM approval_requests WHERE approval_id=%s", [approval_id])
 
@@ -2573,7 +2573,7 @@ def requester_final_decision(request, approval_id: str):
 
                                 # Get all stages and calculate average scores
 
-                                with connections['default'].cursor() as score_cursor:
+                                with connections['tprm'].cursor() as score_cursor:
 
                                     score_cursor.execute("""
 
@@ -3049,7 +3049,7 @@ def admin_handle_rejection(request, approval_id):
 
 
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get workflow details
 
@@ -3396,7 +3396,7 @@ def admin_handle_rejection(request, approval_id):
 
 
 
-        connection.commit()
+        connections['tprm'].commit()
 
         return Response({'message': message}, status=status.HTTP_200_OK)
 
@@ -3428,7 +3428,7 @@ def get_request_versions(request, approval_id):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("""
 
@@ -3517,7 +3517,7 @@ def debug_version_data(request, approval_id):
     Use this to verify version creation and data integrity.
     """
     try:
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
             # Get all versions with full details
             cursor.execute("""
                 SELECT 
@@ -3656,7 +3656,7 @@ def create_workflow(request):
 
         try:
 
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -3808,7 +3808,7 @@ def create_workflow(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connection.commit()
+                connections['tprm'].commit()
 
                 
 
@@ -3868,7 +3868,7 @@ def get_workflows(request):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("""
 
@@ -3918,7 +3918,7 @@ def get_workflow_stages(request, workflow_id):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("""
 
@@ -4000,7 +4000,7 @@ def create_workflow_request(request):
 
         try:
 
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -4156,7 +4156,7 @@ def create_workflow_request(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connection.commit()
+                connections['tprm'].commit()
 
                 
 
@@ -4262,7 +4262,7 @@ def create_comprehensive_workflow(request):
 
         try:
 
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -4666,7 +4666,7 @@ def create_comprehensive_workflow(request):
                                         
                                         # Use the helper function to ensure lifecycle stage exists
                                         # First commit the current transaction to avoid conflicts
-                                        connection.commit()
+                                        connections['tprm'].commit()
                                         
                                         # Ensure lifecycle stage exists (for tracking only, not for approval_stages)
                                         from django.db import transaction
@@ -4820,7 +4820,7 @@ def create_comprehensive_workflow(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connection.commit()
+                connections['tprm'].commit()
 
                 
 
@@ -4999,7 +4999,7 @@ def get_active_questionnaires(request):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # First check if questionnaires table exists and has data
 
@@ -5103,7 +5103,7 @@ def add_dummy_users(request):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Check if users already exist
 
@@ -5163,7 +5163,7 @@ def add_dummy_users(request):
 
             
 
-            connection.commit()
+            connections['tprm'].commit()
 
             
 
@@ -5425,7 +5425,7 @@ def dashboard_stats(request):
 
         from django.db import connections
 
-        cursor = connections['default'].cursor()
+        cursor = connections['tprm'].cursor()
 
         
 
@@ -5589,7 +5589,7 @@ def dashboard_stats(request):
 
         # Fallback to basic counts filtered by business_object_type = 'Vendor'
 
-        cursor = connections['default'].cursor()
+        cursor = connections['tprm'].cursor()
 
         cursor.execute("""
 
@@ -5663,7 +5663,7 @@ def recent_requests(request):
 
     try:
 
-        cursor = connections['default'].cursor()
+        cursor = connections['tprm'].cursor()
 
         
 
@@ -5773,7 +5773,7 @@ def user_tasks(request, user_id):
 
     try:
 
-        cursor = connections['default'].cursor()
+        cursor = connections['tprm'].cursor()
 
         
 
@@ -5921,7 +5921,7 @@ def user_requests(request, user_id):
 
     try:
 
-        cursor = connections['default'].cursor()
+        cursor = connections['tprm'].cursor()
 
         
 
@@ -6587,7 +6587,7 @@ def save_reviewer_scores(request):
 
         
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             cursor.execute("""
 
@@ -6661,7 +6661,7 @@ def save_reviewer_scores(request):
 
                 # Save scores to the stage's response_data field
 
-                with connections['default'].cursor() as cursor:
+                with connections['tprm'].cursor() as cursor:
 
                     # Get current response_data
 
@@ -6755,7 +6755,7 @@ def save_reviewer_scores(request):
 
                     
 
-                    connection.commit()
+                    connections['tprm'].commit()
 
                     
 
@@ -6851,7 +6851,7 @@ def save_reviewer_scores(request):
 
             try:
 
-                with connections['default'].cursor() as cursor:
+                with connections['tprm'].cursor() as cursor:
 
                     # Get the approval_id associated with this assignment
 
@@ -7065,7 +7065,7 @@ def save_reviewer_scores(request):
 
                         
 
-                        connection.commit()
+                        connections['tprm'].commit()
 
                         
 
@@ -7143,7 +7143,7 @@ def save_stage_draft(request):
 
         
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Check if stage exists and is assigned to user
 
@@ -7297,7 +7297,7 @@ def load_stage_draft(request, stage_id):
 
         
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get the stage with draft data
 
@@ -7393,7 +7393,7 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
     try:
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get the approval request and verify it's a parallel response approval
 
@@ -8035,7 +8035,7 @@ def save_final_assignee_scores(request):
 
             workflow_type = None
 
-            with connection.cursor() as wf_cursor:
+            with connections['tprm'].cursor() as wf_cursor:
 
                 wf_cursor.execute("""
 
@@ -8069,7 +8069,7 @@ def save_final_assignee_scores(request):
 
             
 
-            with connection.cursor() as avg_cursor:
+            with connections['tprm'].cursor() as avg_cursor:
 
                 # Get all approved stages for this assignment
 
@@ -8546,7 +8546,7 @@ def save_final_assignee_scores(request):
 
             try:
 
-                with connections['default'].cursor() as cursor:
+                with connections['tprm'].cursor() as cursor:
 
                     # Get the approval_id associated with this assignment
 
@@ -8800,7 +8800,7 @@ def save_final_assignee_scores(request):
 
                         
 
-                        connection.commit()
+                        connections['tprm'].commit()
 
                         
 
@@ -8840,7 +8840,7 @@ def save_final_assignee_scores(request):
                             
                             # Try to get actual user name from database
                             try:
-                                with connections['default'].cursor() as user_cursor:
+                                with connections['tprm'].cursor() as user_cursor:
                                     user_cursor.execute("""
                                         SELECT username FROM users_user WHERE id = %s
                                     """, [assignee_id])
@@ -8971,7 +8971,7 @@ def update_question_scores_in_json(request):
 
         
 
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
 
             # Get the approval_id associated with this assignment
 
@@ -9193,7 +9193,7 @@ def update_question_scores_in_json(request):
 
                 
 
-                connection.commit()
+                connections['tprm'].commit()
 
                 
 
@@ -9600,7 +9600,7 @@ def check_risk_generation_status(request, approval_id):
             }, status=status.HTTP_200_OK)
         else:
             # Check if the approval exists and is approved
-            with connections['default'].cursor() as cursor:
+            with connections['tprm'].cursor() as cursor:
                 cursor.execute("""
                     SELECT overall_status, request_data 
                     FROM approval_requests 
@@ -9649,7 +9649,7 @@ def get_approval_version_history(request, approval_id):
     Each approval, rejection, and decision is recorded with an incremented version number.
     """
     try:
-        with connections['default'].cursor() as cursor:
+        with connections['tprm'].cursor() as cursor:
             # First, verify the approval exists
             cursor.execute("""
                 SELECT ar.approval_id, ar.request_title, ar.overall_status, aw.workflow_type, ar.created_at

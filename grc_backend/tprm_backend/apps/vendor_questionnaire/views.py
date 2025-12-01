@@ -526,7 +526,7 @@ class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
         Query params: status, is_active
         """
         try:
-            from bcpdrp.models import QuestionnaireTemplate
+            from tprm_backend.bcpdrp.models import QuestionnaireTemplate
             
             # Get query parameters
             status_filter = request.query_params.get('status')
@@ -585,7 +585,7 @@ class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
         Query params: template_id
         """
         try:
-            from bcpdrp.models import QuestionnaireTemplate
+            from tprm_backend.bcpdrp.models import QuestionnaireTemplate
             
             template_id = request.query_params.get('template_id')
             if not template_id:
