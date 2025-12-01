@@ -711,7 +711,7 @@ export default {
         }
 
         // Add current user's ID to filters to get only their assigned approvals
-        const userId = currentUser.userid || currentUser.user_id
+        const userId = currentUser.userid || currentUser.user_id || currentUser.UserId
         if (!userId) {
           console.error('No user ID found in current user data:', currentUser)
           assignedApprovals.value = []
@@ -754,7 +754,7 @@ export default {
         }
 
         // Add current user's ID to filters to get only their assigned reviews
-        const userId = currentUser.userid || currentUser.user_id
+        const userId = currentUser.userid || currentUser.user_id || currentUser.UserId
         if (!userId) {
           console.error('No user ID found in current user data:', currentUser)
           reviewApprovals.value = []
@@ -1033,7 +1033,7 @@ export default {
           // Set user info from store
           userInfo.value = {
             full_name: currentUser.full_name || `${currentUser.first_name || ''} ${currentUser.last_name || ''}`.trim() || currentUser.username,
-            user_id: currentUser.userid || currentUser.user_id,
+            user_id: currentUser.userid || currentUser.user_id || currentUser.UserId,
             username: currentUser.username,
             role: currentUser.role || 'User'
           }
@@ -1079,7 +1079,7 @@ export default {
         console.log('User logged in, setting up component')
         userInfo.value = {
           full_name: newUser.full_name || `${newUser.first_name || ''} ${newUser.last_name || ''}`.trim() || newUser.username,
-          user_id: newUser.userid || newUser.user_id,
+          user_id: newUser.userid || newUser.user_id || newUser.UserId,
           username: newUser.username,
           role: newUser.role || 'User'
         }

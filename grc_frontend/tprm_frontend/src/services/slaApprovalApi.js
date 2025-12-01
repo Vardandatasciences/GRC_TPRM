@@ -9,14 +9,19 @@ class SLAApprovalApiService {
     try {
       // Get JWT token from localStorage
       const token = localStorage.getItem('session_token')
-      const headers = {
-        'Content-Type': 'application/json',
-        ...options.headers
+      
+      // Check if token exists - if not, throw a clear error
+      if (!token) {
+        const error = new Error('Authentication required. Please log in.')
+        error.status = 401
+        error.code = 'AUTH_REQUIRED'
+        throw error
       }
       
-      // Add Authorization header if token exists
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers
       }
       
       const response = await fetch(`${this.baseURL}${endpoint}`, {
@@ -26,6 +31,24 @@ class SLAApprovalApiService {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
+        
+        // Handle authentication errors
+        if (response.status === 401 || response.status === 403) {
+          // If it's an auth error, clear the token and redirect to login
+          if (response.status === 401) {
+            localStorage.removeItem('session_token')
+            localStorage.removeItem('current_user')
+            if (window.location.pathname !== '/login') {
+              window.location.href = '/login'
+            }
+          }
+          
+          const error = new Error(errorData.detail || errorData.message || 'Authentication failed')
+          error.status = response.status
+          error.response = errorData
+          throw error
+        }
+        
         throw new Error(`HTTP error! status: ${response.status} - ${JSON.stringify(errorData)}`)
       }
 

@@ -304,7 +304,7 @@
                           class="input" 
                           placeholder='{"Payments":"4h","Collections":"2h","Customer Service":"8h"}' 
                           v-model="extractedData.rto_targets"
-                          title="Enter as JSON object: {&quot;Service&quot;:&quot;Time&quot;}"
+                          title='Enter as JSON object: {"Service":"Time"}'
                         />
                       </div>
                       <div class="field-group">
@@ -313,7 +313,7 @@
                           class="input" 
                           placeholder='{"Payments":"15m","Collections":"30m","Customer Data":"1h"}' 
                           v-model="extractedData.rpo_targets"
-                          title="Enter as JSON object: {&quot;Service&quot;:&quot;Time&quot;}"
+                          title='Enter as JSON object: {"Service":"Time"}'
                         />
                       </div>
                     </div>
@@ -344,7 +344,7 @@
                           class="input" 
                           placeholder='["Incident Commander", "Communication Lead", "Technical Lead"]' 
                           v-model="extractedData.roles_responsibilities"
-                          title="Enter as JSON array: [&quot;Role1&quot;, &quot;Role2&quot;]"
+                          title='Enter as JSON array: ["Role1", "Role2"]'
                         />
                       </div>
                     </div>
@@ -998,22 +998,34 @@ const handleNoApprovalChange = () => {
       }
     }
     
-    // Handle both user_id and userid property names (backend returns userid)
-    const userId = currentUser?.user_id || currentUser?.userid
-    const userName = currentUser?.username || `${currentUser?.first_name || ''} ${currentUser?.last_name || ''}`.trim() || currentUser?.email
+    // Handle multiple property name formats (PascalCase from store, snake_case from localStorage, etc.)
+    const userId = currentUser?.UserId || 
+                   currentUser?.userId || 
+                   currentUser?.user_id || 
+                   currentUser?.userid || 
+                   currentUser?.id
+    
+    const userName = currentUser?.UserName || 
+                     currentUser?.username || 
+                     `${currentUser?.FirstName || currentUser?.first_name || ''} ${currentUser?.LastName || currentUser?.last_name || ''}`.trim() || 
+                     currentUser?.Email || 
+                     currentUser?.email ||
+                     currentUser?.name
     
     if (currentUser && userId) {
       // Auto-fill assigner
       assignmentForm.value.assigner_id = userId.toString()
-      assignmentForm.value.assigner_name = userName
+      assignmentForm.value.assigner_name = userName || 'Current User'
       
       // Set assignee to same as assigner
       assignmentForm.value.assignee_id = userId.toString()
-      assignmentForm.value.assignee_name = userName
+      assignmentForm.value.assignee_name = userName || 'Current User'
     } else {
       console.error('No current user found in store or localStorage')
       console.log('Store state:', store.getters['auth/currentUser'])
       console.log('localStorage current_user:', localStorage.getItem('current_user'))
+      console.log('Current user object:', currentUser)
+      console.log('Resolved userId:', userId)
       PopupService.warning('Unable to get current user information. Please log in again or select assignee manually.', 'User Not Found')
       noApprovalNeeded.value = false
     }
@@ -1047,13 +1059,22 @@ const createAssignment = async () => {
     }
     
     // Prepare the assignment data with proper structure
+    // Ensure assignee_id is set to assigner_id if no approval needed
+    const assignerId = parseInt(assignmentForm.value.assigner_id) || 0
+    const assigneeId = noApprovalNeeded.value 
+      ? assignerId 
+      : (parseInt(assignmentForm.value.assignee_id) || 0)
+    const assigneeName = noApprovalNeeded.value
+      ? assignmentForm.value.assigner_name
+      : assignmentForm.value.assignee_name
+    
     const assignmentData = {
       workflow_name: assignmentForm.value.workflow_name,
       plan_type: selectedPlan.value.plan_type,
-      assigner_id: parseInt(assignmentForm.value.assigner_id),
+      assigner_id: assignerId,
       assigner_name: assignmentForm.value.assigner_name,
-      assignee_id: parseInt(assignmentForm.value.assignee_id),
-      assignee_name: assignmentForm.value.assignee_name,
+      assignee_id: assigneeId,
+      assignee_name: assigneeName,
       object_type: 'PLAN',
       object_id: selectedPlan.value.plan_id,
       due_date: assignmentForm.value.due_date,
@@ -1146,7 +1167,7 @@ const saveExtractedData = async () => {
     })
     
     // Use the OCR microservice extraction endpoint
-    const endpoint = `/api/ocr/plans/${selectedPlan.value.plan_id}/extract/`
+    const endpoint = `/ocr/plans/${selectedPlan.value.plan_id}/extract/`
     
     // Wrap data in extracted_data object as expected by the backend
     await http.post(endpoint, {
@@ -1156,8 +1177,9 @@ const saveExtractedData = async () => {
     })
     
     PopupService.success('Extracted information has been saved successfully', 'Data Saved')
-  } catch (err) {
-    PopupService.error(`Error saving data: ${err.message}`, 'Save Failed')
+  } catch (err: any) {
+    const errorMessage = err.response?.data?.message || err.response?.data?.error || err.message || 'Unknown error occurred'
+    PopupService.error(`Error saving data: ${errorMessage}`, 'Save Failed')
     console.error('Error saving extracted data:', err)
   } finally {
     saving.value = false
@@ -1207,7 +1229,7 @@ const runOCR = async () => {
     console.log('Running OCR for plan:', selectedPlan.value.plan_id)
     
     // Use OCR microservice endpoint
-    const endpoint = `/api/ocr/plans/${selectedPlan.value.plan_id}/run/`
+    const endpoint = `/ocr/plans/${selectedPlan.value.plan_id}/run/`
     
     showInfo('OCR processing started. This may take 1-2 minutes for AI extraction...')
     PopupService.success('OCR processing started. This may take 1-2 minutes for AI extraction...', 'Processing')
@@ -1221,15 +1243,19 @@ const runOCR = async () => {
     
     console.log('OCR processing completed:', response)
     console.log('Response data:', response.data)
-    console.log('Extracted data:', response.data?.extracted_data)
     
-    // Update the extracted data with the OCR results
     // The HTTP interceptor unwraps the response, so data is directly accessible
-    if (response.data?.extracted_data) {
-      console.log('Setting extracted data:', response.data.extracted_data)
+    // Check both response.data.extracted_data and response.data.data.extracted_data
+    // to handle different response structures
+    const extractedDataFromResponse = response.data?.extracted_data || response.data?.data?.extracted_data
+    
+    console.log('Extracted data:', extractedDataFromResponse)
+    
+    if (extractedDataFromResponse) {
+      console.log('Setting extracted data:', extractedDataFromResponse)
       
       // Process the extracted data to handle JSON fields properly
-      const processedData = { ...response.data.extracted_data }
+      const processedData = { ...extractedDataFromResponse }
       
       // Convert JSON objects/arrays to strings for form display
       const jsonFields = [
@@ -1257,9 +1283,11 @@ const runOCR = async () => {
       PopupService.success('OCR processing completed.', 'Success')
     }
     
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error running OCR:', err)
-    showError(`Error running OCR: ${err.response?.data?.message || err.message || 'Unknown error'}`)
+    const errorMessage = err.response?.data?.message || err.response?.data?.error || err.message || 'Unknown error occurred'
+    showError(`Error running OCR: ${errorMessage}`)
+    PopupService.error(`Failed to run OCR: ${errorMessage}`, 'OCR Error')
   } finally {
     isRunningOCR.value = false
   }

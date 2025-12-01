@@ -720,22 +720,34 @@ const handleNoApprovalChange = () => {
       }
     }
     
-    // Handle both user_id and userid property names (backend returns userid)
-    const userId = currentUser?.user_id || currentUser?.userid
-    const userName = currentUser?.username || `${currentUser?.first_name || ''} ${currentUser?.last_name || ''}`.trim() || currentUser?.email
+    // Handle multiple property name formats (PascalCase from store, snake_case from localStorage, etc.)
+    const userId = currentUser?.UserId || 
+                   currentUser?.userId || 
+                   currentUser?.user_id || 
+                   currentUser?.userid || 
+                   currentUser?.id
+    
+    const userName = currentUser?.UserName || 
+                     currentUser?.username || 
+                     `${currentUser?.FirstName || currentUser?.first_name || ''} ${currentUser?.LastName || currentUser?.last_name || ''}`.trim() || 
+                     currentUser?.Email || 
+                     currentUser?.email ||
+                     currentUser?.name
     
     if (currentUser && userId) {
       // Auto-fill assigner
       approvalForm.value.assigner_id = userId.toString()
-      approvalForm.value.assigner_name = userName
+      approvalForm.value.assigner_name = userName || 'Current User'
       
       // Set assignee to same as assigner
       approvalForm.value.assignee_id = userId.toString()
-      approvalForm.value.assignee_name = userName
+      approvalForm.value.assignee_name = userName || 'Current User'
     } else {
       console.error('No current user found in store or localStorage')
       console.log('Store state:', store.getters['auth/currentUser'])
       console.log('localStorage current_user:', localStorage.getItem('current_user'))
+      console.log('Current user object:', currentUser)
+      console.log('Resolved userId:', userId)
       PopupService.warning('Unable to get current user information. Please log in again or select assignee manually.', 'User Not Found')
       noApprovalNeeded.value = false
     }
