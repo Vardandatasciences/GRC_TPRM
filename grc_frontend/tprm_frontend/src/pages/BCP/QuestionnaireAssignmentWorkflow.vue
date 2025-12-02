@@ -419,31 +419,6 @@
         </div>
       </div>
 
-      <!-- Success Message -->
-      <div v-if="showSuccess" class="card bg-green-50 border border-green-200">
-        <div class="card-content">
-          <div class="flex items-center gap-3">
-            <svg class="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <div>
-              <h3 class="text-lg font-semibold text-green-800">Workflow Completed Successfully!</h3>
-              <p class="text-green-700">
-                Questionnaire assignment and approval workflow have been created successfully.
-                Assignment Response ID: {{ assignmentResponseId }}
-              </p>
-            </div>
-          </div>
-          <div class="mt-4 flex gap-2">
-            <button @click="startNewWorkflow" class="btn btn--outline">
-              Start New Workflow
-            </button>
-            <button @click="viewAssignments" class="btn btn--primary">
-              View Assignments
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -469,7 +444,6 @@ const { showSuccess, showError, showWarning, showInfo } = useNotifications()
 const store = useStore()
 
 const currentStep = ref(1)
-const showSuccessMessage = ref(false)
 
 // Assignment form data
 const assignmentForm = ref({
@@ -651,13 +625,11 @@ const submitApprovalAssignment = async () => {
     
     console.log('Approval assignment created successfully:', response)
     
-    // Show success message
-    showSuccessMessage.value = true
+    // Show success popup
+    PopupService.success('Questionnaire assignment and approval workflow have been created successfully!', 'Workflow Completed')
     
-    // Redirect to My Approvals screen after a short delay
-    setTimeout(() => {
-      router.push('/bcp/my-approvals')
-    }, 2000) // 2 second delay to show success message
+    // Redirect to My Approvals screen
+    router.push('/bcp/my-approvals')
     
   } catch (error) {
     console.error('Error creating approval assignment:', error)
@@ -775,27 +747,6 @@ const resetApprovalForm = () => {
 
 const goToStep = (step) => {
   currentStep.value = step
-  showSuccessMessage.value = false
-}
-
-const startNewWorkflow = () => {
-  // Reset all forms and go back to step 1
-  assignmentForm.value = {
-    plan_id: '',
-    questionnaire_id: '',
-    assigned_to_user_id: '',
-    due_date: ''
-  }
-  assignmentResponseId.value = null
-  resetApprovalForm()
-  currentStep.value = 1
-  showSuccessMessage.value = false
-  assignmentError.value = null
-  approvalError.value = null
-}
-
-const viewAssignments = () => {
-  router.push('/bcp/my-approvals')
 }
 
 // Plan selection methods

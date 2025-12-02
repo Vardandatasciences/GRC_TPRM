@@ -18,7 +18,8 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.response import Response
@@ -3181,8 +3182,8 @@ def save_questionnaires_for_term(term_id, questionnaires_data, user):
         questionnaires_data: List of questionnaire objects with question_text, question_type, etc.
         user: The user creating the questionnaires
     """
-    from bcpdrp.models import QuestionnaireTemplate
-    from audits_contract.models import ContractStaticQuestionnaire
+    from tprm_backend.bcpdrp.models import QuestionnaireTemplate
+    from tprm_backend.audits_contract.models import ContractStaticQuestionnaire
     
     if not questionnaires_data or not isinstance(questionnaires_data, list) or len(questionnaires_data) == 0:
         logger.warning(f"No questionnaires data provided for term_id: {term_id}")
@@ -3539,7 +3540,7 @@ def contract_terms_create(request, contract_id):
         if original_term_id_from_request and original_term_id_from_request != saved_term_id:
             logger.info(f"📋 Term ID changed from {original_term_id_from_request} to {saved_term_id}, updating questionnaires in view...")
             try:
-                from audits_contract.models import ContractStaticQuestionnaire
+                from tprm_backend.audits_contract.models import ContractStaticQuestionnaire
                 
                 # Find and update questionnaires with the original term_id
                 questionnaires_to_update = ContractStaticQuestionnaire.objects.filter(
@@ -5731,6 +5732,7 @@ def create_subcontract(request, contract_id):
 
 
 @api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 @authentication_classes([UnifiedJWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_contract_required('TriggerOCR')
@@ -5738,7 +5740,7 @@ def upload_contract_ocr(request, contract_id):
     """Upload contract file for OCR extraction with real AI processing"""
     import tempfile
     import os
-    from ocr_app.services import DocumentProcessingService
+    from tprm_backend.ocr_app.services import DocumentProcessingService
     
     temp_file_path = None
     
@@ -6041,7 +6043,7 @@ def trigger_contract_risk_analysis(request, contract_id):
         # Trigger risk analysis in background thread (no Redis/Celery required)
         try:
             import threading
-            from contract_risk_analysis.models import Risk
+            from tprm_backend.contract_risk_analysis.models import Risk
             
             # Check if risk analysis has already been triggered for this contract
             existing_risks = Risk.objects.filter(
@@ -6055,7 +6057,7 @@ def trigger_contract_risk_analysis(request, contract_id):
                 # Define the risk analysis function to run in thread
                 def run_risk_analysis():
                     try:
-                        from contract_risk_analysis.tasks import analyze_contract_risk_task
+                        from tprm_backend.contract_risk_analysis.tasks import analyze_contract_risk_task
                         # Run synchronously in the background thread
                         result = analyze_contract_risk_task(contract_id)
                         print(f"=== RISK ANALYSIS TRIGGER DEBUG: Risk analysis completed in background thread ===")

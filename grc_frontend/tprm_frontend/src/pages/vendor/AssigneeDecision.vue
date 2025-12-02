@@ -398,7 +398,7 @@
                             </div>
                           </div>
                           
-                          <!-- Average Score Summary -->
+                          <!-- Weighted Score Summary -->
                           <div class="average-score-summary">
                             <div class="average-header">
                               <h6>Overall Assessment</h6>
@@ -407,8 +407,8 @@
                               <div class="average-score-display">
                                 <div class="average-number">{{ (qr.average_score || 0).toFixed(1) }}%</div>
                                 <div class="average-details">
-                                  <div class="average-label">Average Score</div>
-                                  <div class="average-max">normalized percentage</div>
+                                  <div class="average-label">Weighted Score</div>
+                                  <div class="average-max">calculated using weightage</div>
                                 </div>
                               </div>
                             </div>
@@ -447,7 +447,7 @@
                                 <span class="max-score-label">/ {{ getMaxScore(qr.scoring_weight) }}</span>
                               </div>
                               <div class="score-reference">
-                                <span class="reference-label">Overall Assessment:</span>
+                                <span class="reference-label">Weighted Assessment:</span>
                                 <span class="reference-score">{{ (qr.average_score || 0).toFixed(1) }}%</span>
                               </div>
                             </div>

@@ -285,17 +285,37 @@ export default {
       error.value = null
       
       try {
-        console.log('Fetching approval details for ID:', approvalId.value)
+        console.log('🔍 Fetching approval details for ID:', approvalId.value)
         const response = await slaApprovalApi.getApproval(approvalId.value)
+        
+        console.log('📡 Full API response:', response)
+        console.log('📋 Response success:', response?.success)
+        console.log('📋 Response data:', response?.data)
         
         if (response.success && response.data) {
           currentApproval.value = response.data
-          console.log('Approval details loaded:', currentApproval.value)
+          console.log('✅ Approval details loaded:', currentApproval.value)
+          console.log('🔍 SLA details:', currentApproval.value.sla_details)
+          
+          // Check if sla_details is null or empty
+          if (!currentApproval.value.sla_details) {
+            console.error('❌ sla_details is null or missing!')
+            console.error('🔍 Full approval object:', JSON.stringify(currentApproval.value, null, 2))
+            error.value = 'SLA details not found. The SLA may have been deleted or the approval data is incomplete.'
+          } else {
+            console.log('✅ SLA details found:', currentApproval.value.sla_details)
+            console.log('🔍 SLA name:', currentApproval.value.sla_details.sla_name)
+            console.log('🔍 SLA type:', currentApproval.value.sla_details.sla_type)
+            console.log('🔍 Business service:', currentApproval.value.sla_details.business_service_impacted)
+            console.log('🔍 Compliance score:', currentApproval.value.sla_details.compliance_score)
+          }
         } else {
+          console.error('❌ API response failed:', response)
           error.value = response.message || 'Failed to load approval details'
         }
       } catch (err) {
-        console.error('Error fetching approval details:', err)
+        console.error('❌ Error fetching approval details:', err)
+        console.error('❌ Error details:', err.message, err.stack)
         error.value = err.message || 'Failed to load approval details'
       } finally {
         isLoading.value = false

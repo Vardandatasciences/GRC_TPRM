@@ -70,9 +70,18 @@ class SLAApproval(models.Model):
     def get_sla(self):
         """Get the associated SLA object"""
         try:
-            from slas.models import VendorSLA
+            # Use relative import since we're in slas.slaapproval submodule
+            from ..models import VendorSLA
             return VendorSLA.objects.get(sla_id=self.sla_id)
-        except:
+        except VendorSLA.DoesNotExist:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"VendorSLA with sla_id={self.sla_id} not found")
+            return None
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error fetching VendorSLA for sla_id={self.sla_id}: {str(e)}")
             return None
     
     def get_assigner_user(self):

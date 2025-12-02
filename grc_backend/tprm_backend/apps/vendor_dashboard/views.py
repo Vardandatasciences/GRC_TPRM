@@ -50,6 +50,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Database connection helper - Use tprm_integration database for all vendor operations
+def get_db_connection():
+    """
+    Get the correct database connection for tprm_integration database.
+    Returns 'tprm' if available, otherwise falls back to 'default'.
+    """
+    if 'tprm' in connections.databases:
+        return connections['tprm']
+    return get_db_connection()
+
+
 class ScreeningMatchRateAPIView(APIView):
     """API view for calculating vendor screening match rate with RBAC protection"""
     authentication_classes = [UnifiedJWTAuthentication]
@@ -60,7 +71,7 @@ class ScreeningMatchRateAPIView(APIView):
         logger.info("ScreeningMatchRateAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get total vendors count from temp_vendor table
                 cursor.execute("SELECT COUNT(*) AS total_vendors FROM tprm_integration.temp_vendor")
                 total_vendors = cursor.fetchone()[0] or 0
@@ -170,7 +181,7 @@ class QuestionnaireOverdueRateAPIView(APIView):
         logger.info("QuestionnaireOverdueRateAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get total questionnaires count from questionnaire_assignments table
                 cursor.execute("SELECT COUNT(*) AS total_questionnaires FROM tprm_integration.questionnaire_assignments")
                 total_questionnaires = cursor.fetchone()[0] or 0
@@ -266,7 +277,7 @@ class VendorsFlaggedOFACPEPAPIView(APIView):
         logger.info("VendorsFlaggedOFACPEPAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get total vendors count from temp_vendor table
                 cursor.execute("SELECT COUNT(*) AS total_vendors FROM tprm_integration.temp_vendor")
                 total_vendors = cursor.fetchone()[0] or 0
@@ -446,7 +457,7 @@ class VendorAcceptanceTimeAPIView(APIView):
         logger.info("VendorAcceptanceTimeAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get overall average acceptance time
                 cursor.execute("""
                     SELECT AVG(DATEDIFF(v.created_at, tv.created_at)) AS avg_acceptance_time
@@ -816,7 +827,7 @@ class VendorRegistrationCompletionRateAPIView(APIView):
         logger.info("VendorRegistrationCompletionRateAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get total award notifications
                 cursor.execute("SELECT COUNT(*) AS total_notifications FROM tprm_integration.rfp_award_notifications")
                 total_notifications = cursor.fetchone()[0] or 0
@@ -928,7 +939,7 @@ class VendorRegistrationTimeAPIView(APIView):
         logger.info("VendorRegistrationTimeAPIView.get called")
         
         try:
-            with connections['default'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 # Step 1: Get average registration time (response_date to created_at)
                 cursor.execute("""
                     SELECT AVG(DATEDIFF(tv.created_at, ran.response_date)) AS avg_registration_time

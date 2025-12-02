@@ -4,13 +4,23 @@ Health check views for system monitoring
 
 import time
 from django.core.cache import cache
-from django.db import connection
+from django.db import connection, connections
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from database.vendor_sqlalchemy_manager import vendor_db_manager
 from config.celery import app as celery_app
+
+# Database connection helper - Use tprm_integration database for all vendor operations
+def get_db_connection():
+    """
+    Get the correct database connection for tprm_integration database.
+    Returns 'tprm' if available, otherwise falls back to 'default'.
+    """
+    if 'tprm' in connections.databases:
+        return connections['tprm']
+    return connections['default']
 
 
 class VendorHealthCheckView(APIView):
@@ -106,7 +116,7 @@ class VendorDatabaseHealthView(APIView):
             health_data['vendor_timestamp'] = int(time.time())
             
             # Additional Django DB checks
-            with connection.cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
                 cursor.execute("SELECT 1")
                 health_data['vendor_django_db_connected'] = True
             

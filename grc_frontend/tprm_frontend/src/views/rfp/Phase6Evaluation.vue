@@ -295,8 +295,10 @@
                 <div class="pr-8">
                   <div class="flex items-start justify-between mb-4">
                     <div class="flex-1">
-                      <h4 class="text-lg font-semibold text-gray-900 mb-1">{{ proposal.vendor_name }}</h4>
-                      <p class="text-sm text-gray-600">{{ proposal.org || 'No organization specified' }}</p>
+                      <h4 class="text-lg font-semibold text-gray-900 mb-1">{{ getVendorName(proposal) }}</h4>
+                      <p class="text-sm text-gray-600">
+                        {{ getOrganizationName(proposal) }}
+                      </p>
                     </div>
                     <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
                           :class="getStatusBadgeClass(proposal.evaluation_status)">
@@ -451,16 +453,76 @@ const loadUserRFPs = async () => {
     const { fetchRFPs } = useRfpApi()
     const currentUserId = getCurrentUserId()
     
-    // Use authenticated API with filters
-    const data = await fetchRFPs({ 
-      created_by: currentUserId, 
-      status: 'EVALUATION' 
-    })
+    // For "My RFPs", fetch all RFPs created by the user (no status filter)
+    // This ensures we get all RFPs regardless of status
+    const filters = { created_by: currentUserId }
     
-    availableRFPs.value = data.results || data
+    console.log('[Phase6Evaluation] Loading user RFPs with filters:', filters)
+    console.log('[Phase6Evaluation] Current user ID:', currentUserId)
+    
+    // Use authenticated API with filters
+    const data = await fetchRFPs(filters)
+    
+    console.log('[Phase6Evaluation] Raw API response:', data)
+    console.log('[Phase6Evaluation] Response type:', typeof data)
+    console.log('[Phase6Evaluation] Is array:', Array.isArray(data))
+    if (data && typeof data === 'object') {
+      console.log('[Phase6Evaluation] Response keys:', Object.keys(data))
+      console.log('[Phase6Evaluation] Response structure:', JSON.stringify(data, null, 2))
+    }
+    
+    // Handle DRF paginated response format: {results: [...], count: N, next: null, previous: null}
+    // Or direct array response
+    if (data && typeof data === 'object') {
+      if (Array.isArray(data)) {
+        availableRFPs.value = data
+        console.log(`[Phase6Evaluation] Loaded ${data.length} RFPs (array format)`)
+      } else if (data.results && Array.isArray(data.results)) {
+        availableRFPs.value = data.results
+        console.log(`[Phase6Evaluation] Loaded ${data.results.length} RFPs (paginated format)`)
+      } else if (Array.isArray(data.data)) {
+        availableRFPs.value = data.data
+        console.log(`[Phase6Evaluation] Loaded ${data.data.length} RFPs (data wrapper format)`)
+      } else if (data.count !== undefined) {
+        // Empty paginated response: {count: 0, next: null, previous: null}
+        // Or paginated response without results key (shouldn't happen, but handle it)
+        availableRFPs.value = data.results || []
+        console.log(`[Phase6Evaluation] Paginated response (count: ${data.count}, results: ${data.results?.length || 0})`)
+      } else {
+        // Try to extract any array-like values
+        const possibleArrays = Object.values(data).filter(v => Array.isArray(v))
+        if (possibleArrays.length > 0) {
+          availableRFPs.value = possibleArrays[0]
+          console.log(`[Phase6Evaluation] Loaded ${possibleArrays[0].length} RFPs (found array in object)`)
+        } else {
+          availableRFPs.value = []
+          console.warn('[Phase6Evaluation] Unexpected response format:', data)
+          console.warn('[Phase6Evaluation] Response keys:', Object.keys(data))
+        }
+      }
+    } else {
+      availableRFPs.value = []
+      console.warn('[Phase6Evaluation] Invalid response data:', data)
+    }
+    
+    // Debug: Log first RFP structure
+    if (availableRFPs.value.length > 0) {
+      console.log('[Phase6Evaluation] First RFP structure:', availableRFPs.value[0])
+      console.log('[Phase6Evaluation] RFP fields:', {
+        rfp_id: availableRFPs.value[0].rfp_id,
+        rfp_number: availableRFPs.value[0].rfp_number,
+        rfp_title: availableRFPs.value[0].rfp_title
+      })
+    } else {
+      console.warn('[Phase6Evaluation] No RFPs loaded - check filters and API response')
+      console.warn('[Phase6Evaluation] This might mean:')
+      console.warn('  - No RFPs match the filters (created_by=1, status=EVALUATION)')
+      console.warn('  - The API response format is different than expected')
+      console.warn('  - There is a data issue')
+    }
     
   } catch (error) {
-    console.error('Error loading user RFPs:', error)
+    console.error('[Phase6Evaluation] Error loading user RFPs:', error)
     availableRFPs.value = []
     PopupService.error('Failed to load your RFPs. Please try again.', 'Loading Failed')
   } finally {
@@ -473,13 +535,75 @@ const loadAllRFPs = async () => {
   try {
     const { fetchRFPs } = useRfpApi()
     
-    // Use authenticated API with status filter
-    const data = await fetchRFPs({ status: 'EVALUATION' })
+    // For "All RFPs", fetch ALL RFPs without any filters
+    // This ensures we get all active RFPs regardless of status or creator
+    const filters = {}
     
-    availableRFPs.value = data.results || data
+    console.log('[Phase6Evaluation] Loading all RFPs (no filters)')
+    
+    // Use authenticated API without filters to get all RFPs
+    const data = await fetchRFPs(filters)
+    
+    console.log('[Phase6Evaluation] Raw API response:', data)
+    console.log('[Phase6Evaluation] Response type:', typeof data)
+    console.log('[Phase6Evaluation] Is array:', Array.isArray(data))
+    if (data && typeof data === 'object') {
+      console.log('[Phase6Evaluation] Response keys:', Object.keys(data))
+      console.log('[Phase6Evaluation] Response structure:', JSON.stringify(data, null, 2))
+    }
+    
+    // Handle DRF paginated response format: {results: [...], count: N, next: null, previous: null}
+    // Or direct array response
+    if (data && typeof data === 'object') {
+      if (Array.isArray(data)) {
+        availableRFPs.value = data
+        console.log(`[Phase6Evaluation] Loaded ${data.length} RFPs (array format)`)
+      } else if (data.results && Array.isArray(data.results)) {
+        availableRFPs.value = data.results
+        console.log(`[Phase6Evaluation] Loaded ${data.results.length} RFPs (paginated format)`)
+      } else if (Array.isArray(data.data)) {
+        availableRFPs.value = data.data
+        console.log(`[Phase6Evaluation] Loaded ${data.data.length} RFPs (data wrapper format)`)
+      } else if (data.count !== undefined) {
+        // Empty paginated response: {count: 0, next: null, previous: null}
+        // Or paginated response without results key (shouldn't happen, but handle it)
+        availableRFPs.value = data.results || []
+        console.log(`[Phase6Evaluation] Paginated response (count: ${data.count}, results: ${data.results?.length || 0})`)
+      } else {
+        // Try to extract any array-like values
+        const possibleArrays = Object.values(data).filter(v => Array.isArray(v))
+        if (possibleArrays.length > 0) {
+          availableRFPs.value = possibleArrays[0]
+          console.log(`[Phase6Evaluation] Loaded ${possibleArrays[0].length} RFPs (found array in object)`)
+        } else {
+          availableRFPs.value = []
+          console.warn('[Phase6Evaluation] Unexpected response format:', data)
+          console.warn('[Phase6Evaluation] Response keys:', Object.keys(data))
+        }
+      }
+    } else {
+      availableRFPs.value = []
+      console.warn('[Phase6Evaluation] Invalid response data:', data)
+    }
+    
+    // Debug: Log first RFP structure
+    if (availableRFPs.value.length > 0) {
+      console.log('[Phase6Evaluation] First RFP structure:', availableRFPs.value[0])
+      console.log('[Phase6Evaluation] RFP fields:', {
+        rfp_id: availableRFPs.value[0].rfp_id,
+        rfp_number: availableRFPs.value[0].rfp_number,
+        rfp_title: availableRFPs.value[0].rfp_title
+      })
+    } else {
+      console.warn('[Phase6Evaluation] No RFPs loaded - check filters and API response')
+      console.warn('[Phase6Evaluation] This might mean:')
+      console.warn('  - No RFPs match the filter (status=EVALUATION)')
+      console.warn('  - The API response format is different than expected')
+      console.warn('  - There is a data issue')
+    }
     
   } catch (error) {
-    console.error('Error loading all RFPs:', error)
+    console.error('[Phase6Evaluation] Error loading all RFPs:', error)
     availableRFPs.value = []
     PopupService.error('Failed to load RFPs. Please try again.', 'Loading Failed')
   } finally {
@@ -741,6 +865,136 @@ const formatDate = (dateString) => {
   if (!dateString) return 'N/A'
   const date = new Date(dateString)
   return date.toLocaleDateString()
+}
+
+const getVendorName = (proposal) => {
+  if (!proposal) return 'Unknown Vendor'
+  
+  // Try direct vendor_name field first
+  if (proposal.vendor_name) return proposal.vendor_name
+  
+  // Try companyInfo.vendor_name
+  if (proposal.proposal_data?.companyInfo?.vendor_name) {
+    return proposal.proposal_data.companyInfo.vendor_name
+  }
+  
+  // Try companyInfo.company_name
+  if (proposal.proposal_data?.companyInfo?.company_name) {
+    return proposal.proposal_data.companyInfo.company_name
+  }
+  
+  // Try companyInfo.organization_name
+  if (proposal.proposal_data?.companyInfo?.organization_name) {
+    return proposal.proposal_data.companyInfo.organization_name
+  }
+  
+  // Try response_documents.companyInfo
+  if (proposal.response_documents?.companyInfo?.vendor_name) {
+    return proposal.response_documents.companyInfo.vendor_name
+  }
+  
+  if (proposal.response_documents?.companyInfo?.company_name) {
+    return proposal.response_documents.companyInfo.company_name
+  }
+  
+  if (proposal.response_documents?.companyInfo?.organization_name) {
+    return proposal.response_documents.companyInfo.organization_name
+  }
+  
+  // Try direct response_documents fields
+  if (proposal.response_documents?.vendor_name) {
+    return proposal.response_documents.vendor_name
+  }
+  
+  if (proposal.response_documents?.company_name) {
+    return proposal.response_documents.company_name
+  }
+  
+  if (proposal.response_documents?.organization_name) {
+    return proposal.response_documents.organization_name
+  }
+  
+  // Fallback to organization name if available (check org field directly to avoid circular dependency)
+  if (proposal.org) return proposal.org
+  
+  if (proposal.proposal_data?.companyInfo?.org) {
+    return proposal.proposal_data.companyInfo.org
+  }
+  
+  if (proposal.response_documents?.companyInfo?.org) {
+    return proposal.response_documents.companyInfo.org
+  }
+  
+  if (proposal.response_documents?.org) {
+    return proposal.response_documents.org
+  }
+  
+  return 'Unknown Vendor'
+}
+
+const getOrganizationName = (proposal) => {
+  if (!proposal) return 'No organization specified'
+  
+  // Try direct org field first
+  if (proposal.org) return proposal.org
+  
+  // Try companyInfo.org
+  if (proposal.proposal_data?.companyInfo?.org) {
+    return proposal.proposal_data.companyInfo.org
+  }
+  
+  // Try companyInfo.organization_name
+  if (proposal.proposal_data?.companyInfo?.organization_name) {
+    return proposal.proposal_data.companyInfo.organization_name
+  }
+  
+  // Try companyInfo.company_name
+  if (proposal.proposal_data?.companyInfo?.company_name) {
+    return proposal.proposal_data.companyInfo.company_name
+  }
+  
+  // Try response_documents.companyInfo
+  if (proposal.response_documents?.companyInfo?.org) {
+    return proposal.response_documents.companyInfo.org
+  }
+  
+  if (proposal.response_documents?.companyInfo?.organization_name) {
+    return proposal.response_documents.companyInfo.organization_name
+  }
+  
+  if (proposal.response_documents?.companyInfo?.company_name) {
+    return proposal.response_documents.companyInfo.company_name
+  }
+  
+  // Try direct response_documents fields
+  if (proposal.response_documents?.org) {
+    return proposal.response_documents.org
+  }
+  
+  if (proposal.response_documents?.organization_name) {
+    return proposal.response_documents.organization_name
+  }
+  
+  if (proposal.response_documents?.company_name) {
+    return proposal.response_documents.company_name
+  }
+  
+  // Fallback to vendor_name if available (check vendor_name field directly to avoid circular dependency)
+  if (proposal.vendor_name) return proposal.vendor_name
+  
+  if (proposal.proposal_data?.companyInfo?.vendor_name) {
+    return proposal.proposal_data.companyInfo.vendor_name
+  }
+  
+  if (proposal.response_documents?.companyInfo?.vendor_name) {
+    return proposal.response_documents.companyInfo.vendor_name
+  }
+  
+  if (proposal.response_documents?.vendor_name) {
+    return proposal.response_documents.vendor_name
+  }
+  
+  return 'No organization specified'
 }
 </script>
 

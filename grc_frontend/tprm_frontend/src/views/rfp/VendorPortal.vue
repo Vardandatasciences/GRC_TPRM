@@ -5799,6 +5799,45 @@ const fetchInvitationDetails = async () => {
         } else {
           console.log('⚠️ No documents field found in open RFP response')
         }
+        
+        // Extract evaluation criteria from RFP details if present
+        console.log('🔍 [fetchInvitationDetails] Checking for evaluation_criteria in RFP data...')
+        console.log('🔍 [fetchInvitationDetails] RFP data keys:', Object.keys(data.rfp || {}))
+        console.log('🔍 [fetchInvitationDetails] Has evaluation_criteria:', !!data.rfp.evaluation_criteria)
+        console.log('🔍 [fetchInvitationDetails] evaluation_criteria type:', typeof data.rfp.evaluation_criteria)
+        console.log('🔍 [fetchInvitationDetails] evaluation_criteria value:', data.rfp.evaluation_criteria)
+        
+        if (data.rfp.evaluation_criteria && Array.isArray(data.rfp.evaluation_criteria) && data.rfp.evaluation_criteria.length > 0) {
+          console.log('✅ [fetchInvitationDetails] Found evaluation criteria in RFP details:', data.rfp.evaluation_criteria.length, 'criteria')
+          evaluationCriteria.value = data.rfp.evaluation_criteria.map(criterion => ({
+            id: criterion.criteria_id,
+            title: criterion.criteria_name,
+            weight: criterion.weight_percentage,
+            description: criterion.criteria_description,
+            type: criterion.evaluation_type === 'narrative' ? 'narrative' : 'text',
+            required: criterion.is_mandatory
+          }))
+          console.log('✅ Loaded evaluation criteria from RFP details:', evaluationCriteria.value.length, 'criteria')
+          console.log('✅ Criteria IDs:', evaluationCriteria.value.map(c => c.id))
+          
+          // Initialize responses for each criterion
+          evaluationCriteria.value.forEach(criterion => {
+            const existing = responses.value?.[criterion.id]
+            setCriteriaResponse(criterion.id, existing || createEmptyResponseEntry())
+          })
+          
+          // Update completion status
+          updateCompletionStatus()
+        } else {
+          console.warn('⚠️ No evaluation criteria found in RFP details')
+          console.warn('⚠️ RFP data structure:', {
+            has_evaluation_criteria: !!data.rfp.evaluation_criteria,
+            evaluation_criteria_type: typeof data.rfp.evaluation_criteria,
+            evaluation_criteria_value: data.rfp.evaluation_criteria,
+            is_array: Array.isArray(data.rfp.evaluation_criteria),
+            length: Array.isArray(data.rfp.evaluation_criteria) ? data.rfp.evaluation_criteria.length : 'N/A'
+          })
+        }
       } else {
         throw new Error(data?.error || 'Failed to load RFP details')
       }
@@ -5901,6 +5940,45 @@ const fetchInvitationDetails = async () => {
           })
         } else {
           console.log('⚠️ [fetchInvitationDetails] No response_fields found in RFP data')
+        }
+        
+        // Extract evaluation criteria from RFP details if present
+        console.log('🔍 [fetchInvitationDetails] Checking for evaluation_criteria in RFP data (invited RFP)...')
+        console.log('🔍 [fetchInvitationDetails] RFP keys:', Object.keys(rfp || {}))
+        console.log('🔍 [fetchInvitationDetails] Has evaluation_criteria:', !!rfp.evaluation_criteria)
+        console.log('🔍 [fetchInvitationDetails] evaluation_criteria type:', typeof rfp.evaluation_criteria)
+        console.log('🔍 [fetchInvitationDetails] evaluation_criteria value:', rfp.evaluation_criteria)
+        
+        if (rfp.evaluation_criteria && Array.isArray(rfp.evaluation_criteria) && rfp.evaluation_criteria.length > 0) {
+          console.log('✅ [fetchInvitationDetails] Found evaluation criteria in RFP details:', rfp.evaluation_criteria.length, 'criteria')
+          evaluationCriteria.value = rfp.evaluation_criteria.map(criterion => ({
+            id: criterion.criteria_id,
+            title: criterion.criteria_name,
+            weight: criterion.weight_percentage,
+            description: criterion.criteria_description,
+            type: criterion.evaluation_type === 'narrative' ? 'narrative' : 'text',
+            required: criterion.is_mandatory
+          }))
+          console.log('✅ Loaded evaluation criteria from RFP details:', evaluationCriteria.value.length, 'criteria')
+          console.log('✅ Criteria IDs:', evaluationCriteria.value.map(c => c.id))
+          
+          // Initialize responses for each criterion
+          evaluationCriteria.value.forEach(criterion => {
+            const existing = responses.value?.[criterion.id]
+            setCriteriaResponse(criterion.id, existing || createEmptyResponseEntry())
+          })
+          
+          // Update completion status
+          updateCompletionStatus()
+        } else {
+          console.warn('⚠️ No evaluation criteria found in RFP details (invited RFP)')
+          console.warn('⚠️ RFP data structure:', {
+            has_evaluation_criteria: !!rfp.evaluation_criteria,
+            evaluation_criteria_type: typeof rfp.evaluation_criteria,
+            evaluation_criteria_value: rfp.evaluation_criteria,
+            is_array: Array.isArray(rfp.evaluation_criteria),
+            length: Array.isArray(rfp.evaluation_criteria) ? rfp.evaluation_criteria.length : 'N/A'
+          })
         }
         
         // Update form data with vendor details - prefill all available fields
@@ -6105,10 +6183,86 @@ const loadExistingResponse = async () => {
 }
 
 const fetchEvaluationCriteria = async () => {
-  // Try to get RFP number from rfpInfo first
+  // Skip if criteria are already loaded (they should be loaded from RFP details)
+  if (evaluationCriteria.value && Array.isArray(evaluationCriteria.value) && evaluationCriteria.value.length > 0) {
+    console.log('✅ Evaluation criteria already loaded, skipping separate fetch')
+    return
+  }
+  
+  console.log('📋 Starting separate fetch for evaluation criteria...')
+  
+  // Try to get RFP ID first (preferred method - uses new endpoint)
+  const rfpId = invitationData.value?.rfpId
+  
+  // If we have rfpId, use the new endpoint that accepts rfp_id
+  if (rfpId) {
+    console.log('📋 Fetching evaluation criteria for RFP ID:', rfpId)
+    console.log('📋 API URL:', `${API_BASE_URL}/rfp/${rfpId}/evaluation-criteria/`)
+    
+    try {
+      // API_BASE_URL already ends with /rfp, so we use rfp/ to match the URL pattern
+      const response = await fetch(`${API_BASE_URL}/rfp/${rfpId}/evaluation-criteria/`, {
+        headers: getAuthHeaders()
+      })
+      
+      if (!response.ok) {
+        console.error('❌ Failed to fetch evaluation criteria:', response.status, response.statusText)
+        const errorText = await response.text()
+        console.error('Error response:', errorText)
+        // Don't set empty array, keep existing criteria if any
+        return
+      }
+      
+      const data = await response.json()
+      console.log('📥 Evaluation criteria response:', data)
+      
+      if (data.success && data.criteria && Array.isArray(data.criteria) && data.criteria.length > 0) {
+        // Update evaluation criteria with real data
+        evaluationCriteria.value = data.criteria.map(criterion => ({
+          id: criterion.criteria_id,
+          title: criterion.criteria_name,
+          weight: criterion.weight_percentage,
+          description: criterion.criteria_description,
+          type: criterion.evaluation_type === 'narrative' ? 'narrative' : 'text',
+          required: criterion.is_mandatory
+        }))
+        
+        console.log('✅ Loaded evaluation criteria:', evaluationCriteria.value.length, 'criteria')
+        
+        // Initialize responses for each criterion
+        evaluationCriteria.value.forEach(criterion => {
+          const existing = responses.value?.[criterion.id]
+          setCriteriaResponse(criterion.id, existing || createEmptyResponseEntry())
+        })
+        
+        // Update completion status
+        updateCompletionStatus()
+      } else {
+        console.warn('⚠️ No criteria found in response or invalid format:', data)
+        // Don't set empty array if we have existing criteria
+        if (!evaluationCriteria.value || evaluationCriteria.value.length === 0) {
+          evaluationCriteria.value = []
+        }
+      }
+    } catch (error) {
+      // Handle connection errors gracefully
+      if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED'))) {
+        console.warn('⚠️ Server connection error - criteria should be loaded from RFP details instead')
+        console.warn('⚠️ If criteria are not showing, check that the RFP details response includes evaluation_criteria')
+      } else {
+        console.error('❌ Error fetching evaluation criteria:', error)
+      }
+      // Don't set empty array, keep existing criteria if any
+      if (!evaluationCriteria.value || evaluationCriteria.value.length === 0) {
+        evaluationCriteria.value = []
+      }
+    }
+    return
+  }
+  
+  // Fallback: Try to get RFP number if rfpId is not available
   let rfpNumber = rfpInfo.value?.rfpNumber
   
-  // If not available, try to get it from invitationData
   if (!rfpNumber && invitationData.value?.rfpId) {
     console.log('⚠️ RFP number not in rfpInfo, will try to fetch from RFP ID:', invitationData.value.rfpId)
     // We'll fetch the RFP details to get the number
@@ -6142,6 +6296,7 @@ const fetchEvaluationCriteria = async () => {
   console.log('📋 Fetching evaluation criteria for RFP:', rfpNumber)
   
   try {
+    // Note: API_BASE_URL already ends with /rfp, so we use rfp/ not /rfp/
     const response = await fetch(`${API_BASE_URL}/rfp/${rfpNumber}/evaluation-criteria/`, {
       headers: getAuthHeaders()
     })
@@ -6173,7 +6328,6 @@ const fetchEvaluationCriteria = async () => {
       evaluationCriteria.value.forEach(criterion => {
         const existing = responses.value?.[criterion.id]
         setCriteriaResponse(criterion.id, existing || createEmptyResponseEntry())
-
       })
       
       // Update completion status
@@ -7651,16 +7805,30 @@ onMounted(async () => {
     // Fetch RFP details first (this also loads draft and response data)
     await fetchInvitationDetails()
     
-    // Fetch evaluation criteria (needed for responses)
-    // Wait a bit to ensure rfpInfo is populated
-    await new Promise(resolve => setTimeout(resolve, 100))
-    await fetchEvaluationCriteria()
+    // Evaluation criteria should already be loaded from fetchInvitationDetails
+    // Check if criteria were loaded
+    console.log('🔍 [onMounted] Checking evaluation criteria status...')
+    console.log('🔍 [onMounted] evaluationCriteria.value:', evaluationCriteria.value)
+    console.log('🔍 [onMounted] evaluationCriteria.value type:', typeof evaluationCriteria.value)
+    console.log('🔍 [onMounted] evaluationCriteria.value is array:', Array.isArray(evaluationCriteria.value))
+    console.log('🔍 [onMounted] evaluationCriteria.value length:', Array.isArray(evaluationCriteria.value) ? evaluationCriteria.value.length : 'N/A')
     
-    // If criteria still not loaded, try again after a short delay
-    if (!evaluationCriteria.value || evaluationCriteria.value.length === 0) {
-      console.log('⚠️ Criteria not loaded on first attempt, retrying...')
-      await new Promise(resolve => setTimeout(resolve, 500))
+    // Only fetch separately if not already loaded
+    if (!evaluationCriteria.value || !Array.isArray(evaluationCriteria.value) || evaluationCriteria.value.length === 0) {
+      console.log('⚠️ Criteria not loaded from RFP details, attempting separate fetch...')
+      console.log('⚠️ This may fail if server is not running - criteria should be in RFP details response')
+      await new Promise(resolve => setTimeout(resolve, 100))
       await fetchEvaluationCriteria()
+      
+      // If criteria still not loaded, try again after a short delay
+      if (!evaluationCriteria.value || !Array.isArray(evaluationCriteria.value) || evaluationCriteria.value.length === 0) {
+        console.log('⚠️ Criteria not loaded on first attempt, retrying...')
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await fetchEvaluationCriteria()
+      }
+    } else {
+      console.log('✅ Evaluation criteria already loaded from RFP details, skipping separate fetch')
+      console.log('✅ Criteria count:', evaluationCriteria.value.length)
     }
     
     // Load existing documents

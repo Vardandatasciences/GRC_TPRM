@@ -760,7 +760,7 @@ def templates_by_term(request):
     matching the given term_category or term_id.
     """
     try:
-        from bcpdrp.models import QuestionnaireTemplate
+        from tprm_backend.bcpdrp.models import QuestionnaireTemplate
         
         term_category = request.query_params.get('term_category', None)
         term_title = request.query_params.get('term_title', None)
@@ -931,7 +931,7 @@ def templates_by_term(request):
 def template_questions(request, template_id):
     """Get questions from a specific questionnaire template."""
     try:
-        from bcpdrp.models import QuestionnaireTemplate
+        from tprm_backend.bcpdrp.models import QuestionnaireTemplate
         
         try:
             template = QuestionnaireTemplate.objects.get(

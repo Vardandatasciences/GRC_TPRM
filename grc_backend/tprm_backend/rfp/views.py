@@ -3,6 +3,7 @@ from rest_framework.decorators import action, api_view, authentication_classes, 
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Q, Count, Avg
 from django.utils import timezone
 from django.core.files.storage import default_storage
@@ -74,10 +75,31 @@ class RFPViewSet(RFPAuthenticationMixin, viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at', 'submission_deadline', 'rfp_title']
     ordering = ['-created_at']
     
+    # Use rfp_id as lookup field since that's the primary key
+    lookup_field = 'rfp_id'
+    lookup_url_kwarg = 'pk'  # URL parameter name (can be pk or rfp_id)
+    
     # Explicitly set authentication and permission classes
     authentication_classes = [UnifiedJWTAuthentication]
     permission_classes = [SimpleAuthenticatedPermission]
 
+    def retrieve(self, request, *args, **kwargs):
+        """
+        Override retrieve method to add debug logging
+        """
+        try:
+            print(f"[RFPViewSet.retrieve] Retrieving RFP with pk={kwargs.get('pk')}")
+            print(f"[RFPViewSet.retrieve] lookup_field={self.lookup_field}, lookup_url_kwarg={self.lookup_url_kwarg}")
+            response = super().retrieve(request, *args, **kwargs)
+            if hasattr(response, 'data'):
+                print(f"[RFPViewSet.retrieve] Retrieved RFP: rfp_id={response.data.get('rfp_id')}, rfp_title={response.data.get('rfp_title')}")
+            return response
+        except Exception as e:
+            print(f"[RFPViewSet.retrieve] Error retrieving RFP: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            raise
+    
     def get_serializer_class(self):
         if self.action == 'list':
             return RFPListSerializer
@@ -87,10 +109,36 @@ class RFPViewSet(RFPAuthenticationMixin, viewsets.ModelViewSet):
         
     def list(self, request, *args, **kwargs):
         """
-        Override list method to handle errors better
+        Override list method to handle errors better and add debug logging
         """
         try:
-            return super().list(request, *args, **kwargs)
+            # Get queryset before pagination
+            queryset = self.filter_queryset(self.get_queryset())
+            print(f"[RFPViewSet.list] Queryset count: {queryset.count()}")
+            print(f"[RFPViewSet.list] Query params: {dict(request.query_params)}")
+            
+            # Call parent list method which handles pagination
+            response = super().list(request, *args, **kwargs)
+            
+            # Log response structure
+            if hasattr(response, 'data'):
+                response_type = type(response.data).__name__
+                print(f"[RFPViewSet.list] Response data type: {response_type}")
+                if isinstance(response.data, dict):
+                    print(f"[RFPViewSet.list] Response data keys: {list(response.data.keys())}")
+                    if 'results' in response.data:
+                        print(f"[RFPViewSet.list] Results count: {len(response.data['results'])}")
+                        if len(response.data['results']) > 0:
+                            first_rfp = response.data['results'][0]
+                            print(f"[RFPViewSet.list] First RFP: rfp_id={first_rfp.get('rfp_id')}, rfp_title={first_rfp.get('rfp_title')}, rfp_number={first_rfp.get('rfp_number')}")
+                elif isinstance(response.data, list):
+                    print(f"[RFPViewSet.list] Response is a list with {len(response.data)} items")
+                    if len(response.data) > 0:
+                        print(f"[RFPViewSet.list] First RFP: {response.data[0]}")
+                else:
+                    print(f"[RFPViewSet.list] Response data: {response.data}")
+            
+            return response
         except Exception as e:
             print("Exception during RFP listing:", str(e))
             import traceback
@@ -101,23 +149,54 @@ class RFPViewSet(RFPAuthenticationMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Filter RFPs based on user role and permissions
+        Also handle query parameter filters for created_by and status
         """
-        # For development, return all RFPs
-        return RFP.objects.all()
+        queryset = RFP.objects.all().order_by('-created_at')
         
-        # In production, we would filter by user
+        # Filter by created_by if provided in query parameters
+        created_by = self.request.query_params.get('created_by')
+        if created_by:
+            try:
+                created_by_id = int(created_by)
+                queryset = queryset.filter(created_by=created_by_id)
+                print(f"[RFPViewSet.get_queryset] Filtered by created_by={created_by_id}, count: {queryset.count()}")
+            except (ValueError, TypeError):
+                pass  # Ignore invalid created_by parameter
+        
+        # Filter by status if provided in query parameters
+        status = self.request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(status=status)
+            print(f"[RFPViewSet.get_queryset] Filtered by status={status}, count: {queryset.count()}")
+        
+        # Log total count for debugging
+        total_count = queryset.count()
+        print(f"[RFPViewSet.get_queryset] Final queryset count: {total_count}")
+        if total_count == 0:
+            # Log all available RFPs and their statuses for debugging
+            all_rfps = RFP.objects.all()
+            print(f"[RFPViewSet.get_queryset] Total RFPs in database: {all_rfps.count()}")
+            if all_rfps.exists():
+                statuses = all_rfps.values_list('status', flat=True).distinct()
+                print(f"[RFPViewSet.get_queryset] Available statuses: {list(statuses)}")
+                created_by_values = all_rfps.values_list('created_by', flat=True).distinct()
+                print(f"[RFPViewSet.get_queryset] Available created_by values: {list(created_by_values)}")
+        
+        # In production, we would also filter by user role
         # user = self.request.user
         # 
         # # Superusers can see all RFPs
         # if user.is_superuser:
-        #     return RFP.objects.all()
+        #     return queryset
         # 
         # # Filter RFPs based on user's role
-        # return RFP.objects.filter(
+        # return queryset.filter(
         #     Q(created_by=user) |
         #     Q(primary_reviewer_id=user.id) |
         #     Q(executive_reviewer_id=user.id)
         # )
+        
+        return queryset
 
     def create(self, request, *args, **kwargs):
         """
@@ -881,22 +960,51 @@ class RFPTypeCustomFieldsViewSet(RFPAuthenticationMixin, viewsets.ReadOnlyModelV
     filter_backends = [filters.SearchFilter]
     search_fields = ['rfp_type']
     
-    @action(detail=False, methods=['get'])
+    
+    def get_queryset(self):
+        """
+        Return all RFP type custom fields
+        """
+        queryset = RFPTypeCustomFields.objects.all()
+        logger.info(f'[RFPTypeCustomFieldsViewSet.get_queryset] Total records: {queryset.count()}')
+        return queryset
+    
+    @action(detail=False, methods=['get'], authentication_classes=[], permission_classes=[AllowAny])
     def types(self, request):
         """
         Get list of unique RFP types (just the rfp_type values)
+        Uses AllowAny permission and no authentication since these are read-only public data
         """
-        rfp_types = RFPTypeCustomFields.objects.values_list('rfp_type', flat=True).distinct().order_by('rfp_type')
-        return Response({
-            'success': True,
-            'rfp_types': list(rfp_types)
-        })
+        try:
+            logger.info('[RFPTypeCustomFieldsViewSet.types] Fetching RFP types from database')
+            
+            # Query for distinct RFP types
+            rfp_types = RFPTypeCustomFields.objects.values_list('rfp_type', flat=True).distinct().order_by('rfp_type')
+            rfp_types_list = list(rfp_types)
+            
+            logger.info(f'[RFPTypeCustomFieldsViewSet.types] Found {len(rfp_types_list)} RFP types: {rfp_types_list}')
+            
+            # Always return success, even if list is empty
+            return Response({
+                'success': True,
+                'rfp_types': rfp_types_list
+            })
+        except Exception as e:
+            logger.error(f'[RFPTypeCustomFieldsViewSet.types] Error fetching RFP types: {str(e)}')
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response({
+                'success': False,
+                'error': f'Error fetching RFP types: {str(e)}',
+                'rfp_types': []
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], authentication_classes=[], permission_classes=[AllowAny])
     def custom_fields(self, request):
         """
         Get custom fields for a specific RFP type
         Query parameter: rfp_type (required)
+        Uses AllowAny permission and no authentication since these are read-only public data
         """
         rfp_type = request.query_params.get('rfp_type', None)
         
@@ -938,6 +1046,7 @@ class DocumentUploadView(APIView):
     """
     authentication_classes = [UnifiedJWTAuthentication]
     permission_classes = [SimpleAuthenticatedPermission]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]  # Support multipart/form-data for file uploads
     
     def post(self, request):
         """
@@ -1056,9 +1165,16 @@ class DocumentUploadView(APIView):
                     print(f"[SUCCESS] Document uploaded successfully: {document_name} (S3 ID: {s3_file.id})")
                     print(f"[SUCCESS] S3 file saved to database with ID: {s3_file.id}")
                     
-                    # Check how many documents exist for this RFP
-                    rfp_docs_count = S3Files.objects.filter(metadata__rfp_id=rfp_id).count()
-                    print(f"[INFO] Total documents for RFP {rfp_id}: {rfp_docs_count}")
+                    # Check how many documents exist for this RFP (only if rfp_id is provided)
+                    rfp_docs_count = 0
+                    if rfp_id:
+                        try:
+                            rfp_docs_count = S3Files.objects.filter(metadata__rfp_id=rfp_id).count()
+                            print(f"[INFO] Total documents for RFP {rfp_id}: {rfp_docs_count}")
+                        except Exception as count_error:
+                            print(f"[WARN] Could not count RFP documents: {str(count_error)}")
+                    else:
+                        print(f"[INFO] No RFP ID provided, skipping document count")
                     
                     return Response({
                         'success': True,
@@ -1482,6 +1598,7 @@ class MergeDocumentsView(APIView):
     """
     authentication_classes = []  # Allow anonymous access for vendor portal
     permission_classes = [AllowAny]  # Allow anonymous access for vendor portal
+    parser_classes = [MultiPartParser, FormParser, JSONParser]  # Support multipart/form-data for file uploads - MultiPartParser must be first
    
     def post(self, request):
         """
@@ -1490,15 +1607,33 @@ class MergeDocumentsView(APIView):
         try:
             from .models import S3Files
            
+            # Debug: Print request information
+            print(f"[MERGE] Request method: {request.method}")
+            print(f"[MERGE] Content-Type: {request.content_type}")
+            print(f"[MERGE] Request data keys: {list(request.data.keys())}")
+            print(f"[MERGE] Request FILES keys: {list(request.FILES.keys())}")
+            print(f"[MERGE] Request data: {request.data}")
+           
             document_ids = request.data.get('document_ids', [])
             document_order = request.data.get('document_order', [])
+            
+            # Try multiple ways to get files
             files = request.FILES.getlist('files')  # For direct file uploads
+            if not files:
+                # Try getting files directly from FILES dict
+                if 'files' in request.FILES:
+                    files = [request.FILES['files']] if not isinstance(request.FILES.getlist('files'), list) else request.FILES.getlist('files')
+                # Try getting all files
+                if not files and request.FILES:
+                    files = list(request.FILES.values())
+            
             rfp_id = request.data.get('rfp_id')  # Optional
             user_id = request.data.get('user_id', '1')
            
             print(f"[MERGE] Standalone merge request received")
             print(f"   Document IDs: {document_ids}")
             print(f"   Files: {len(files) if files else 0}")
+            print(f"   File names: {[f.name for f in files] if files else 'None'}")
             print(f"   RFP ID: {rfp_id or 'None (standalone merge)'}")
            
             # Determine merge method
@@ -1996,13 +2131,13 @@ class AwardNotificationView(APIView):
                     'error': 'RFP response not found'
                 }, status=status.HTTP_404_NOT_FOUND)
             
-            # Extract email - Priority: 1) Frontend provided email, 2) response_documents, 3) default
+            # Extract email - Priority: 1) Frontend provided email, 2) response_documents, 3) vendor_contacts table, 4) default
             recipient_email = 'vendor@example.com'  # Default fallback
             
             # Priority 1: Use email from frontend if provided
-            if vendor_email and vendor_email != 'vendor@example.com':
-                recipient_email = vendor_email
-                print(f"Using email from frontend: {recipient_email}")
+            if vendor_email and vendor_email != 'vendor@example.com' and vendor_email.strip():
+                recipient_email = vendor_email.strip()
+                print(f"[AWARD NOTIFICATION] Using email from frontend: {recipient_email}")
             # Priority 2: Try to extract from response_documents
             elif response.response_documents:
                 try:
@@ -2010,26 +2145,77 @@ class AwardNotificationView(APIView):
                     response_docs = json.loads(response.response_documents) if isinstance(response.response_documents, str) else response.response_documents
                     
                     # Check multiple possible locations for email
-                    if response_docs.get('contact_email'):
-                        recipient_email = response_docs['contact_email']
-                        print(f"Found email in response_docs.contact_email: {recipient_email}")
-                    elif response_docs.get('companyInfo', {}).get('email'):
-                        recipient_email = response_docs['companyInfo']['email']
-                        print(f"Found email in companyInfo.email: {recipient_email}")
-                    elif response_docs.get('companyInfo', {}).get('contactEmail'):
-                        recipient_email = response_docs['companyInfo']['contactEmail']
-                        print(f"Found email in companyInfo.contactEmail: {recipient_email}")
-                    elif response_docs.get('email'):
-                        recipient_email = response_docs['email']
-                        print(f"Found email in response_docs.email: {recipient_email}")
-                    elif response_docs.get('proposalData', {}).get('companyInfo', {}).get('email'):
-                        recipient_email = response_docs['proposalData']['companyInfo']['email']
-                        print(f"Found email in proposalData.companyInfo.email: {recipient_email}")
+                    if response_docs.get('contact_email') and response_docs.get('contact_email') != 'vendor@example.com':
+                        recipient_email = response_docs['contact_email'].strip()
+                        print(f"[AWARD NOTIFICATION] Found email in response_docs.contact_email: {recipient_email}")
+                    elif response_docs.get('companyInfo', {}).get('contactEmail') and response_docs.get('companyInfo', {}).get('contactEmail') != 'vendor@example.com':
+                        recipient_email = response_docs['companyInfo']['contactEmail'].strip()
+                        print(f"[AWARD NOTIFICATION] Found email in companyInfo.contactEmail: {recipient_email}")
+                    elif response_docs.get('companyInfo', {}).get('email') and response_docs.get('companyInfo', {}).get('email') != 'vendor@example.com':
+                        recipient_email = response_docs['companyInfo']['email'].strip()
+                        print(f"[AWARD NOTIFICATION] Found email in companyInfo.email: {recipient_email}")
+                    elif response_docs.get('email') and response_docs.get('email') != 'vendor@example.com':
+                        recipient_email = response_docs['email'].strip()
+                        print(f"[AWARD NOTIFICATION] Found email in response_docs.email: {recipient_email}")
+                    elif response_docs.get('proposalData', {}).get('companyInfo', {}).get('email') and response_docs.get('proposalData', {}).get('companyInfo', {}).get('email') != 'vendor@example.com':
+                        recipient_email = response_docs['proposalData']['companyInfo']['email'].strip()
+                        print(f"[AWARD NOTIFICATION] Found email in proposalData.companyInfo.email: {recipient_email}")
                 except Exception as e:
-                    print(f"Error parsing response_documents: {e}")
+                    print(f"[AWARD NOTIFICATION] Error parsing response_documents: {e}")
                     pass
             
-            print(f"Final recipient email: {recipient_email}")
+            # Priority 3: If still not found and vendor_id exists, try fetching from vendor_contacts table
+            if (not recipient_email or recipient_email == 'vendor@example.com') and response.vendor_id:
+                try:
+                    from django.db import connection
+                    with connection.cursor() as cursor:
+                        # Try to get primary contact email from vendor_contacts table
+                        try:
+                            cursor.execute('''
+                                SELECT email
+                                FROM tprm_integration.vendor_contacts
+                                WHERE vendor_id = %s 
+                                AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1' OR is_primary = 'Y')
+                                AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                                AND email IS NOT NULL AND email != ''
+                                ORDER BY is_primary DESC, contact_id ASC
+                                LIMIT 1
+                            ''', [response.vendor_id])
+                            contact = cursor.fetchone()
+                            if contact and contact[0] and contact[0].strip() and contact[0] != 'vendor@example.com':
+                                recipient_email = contact[0].strip()
+                                print(f"[AWARD NOTIFICATION] Found email from vendor_contacts table: {recipient_email}")
+                        except Exception as schema_error:
+                            # Fallback: try without schema prefix
+                            try:
+                                cursor.execute('''
+                                    SELECT email
+                                    FROM vendor_contacts
+                                    WHERE vendor_id = %s 
+                                    AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1')
+                                    AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                                    AND email IS NOT NULL AND email != ''
+                                    ORDER BY is_primary DESC, contact_id ASC
+                                    LIMIT 1
+                                ''', [response.vendor_id])
+                                contact = cursor.fetchone()
+                                if contact and contact[0] and contact[0].strip() and contact[0] != 'vendor@example.com':
+                                    recipient_email = contact[0].strip()
+                                    print(f"[AWARD NOTIFICATION] Found email from vendor_contacts table (fallback): {recipient_email}")
+                            except Exception as fallback_error:
+                                print(f"[AWARD NOTIFICATION] Could not fetch email from vendor_contacts: {fallback_error}")
+                except Exception as e:
+                    print(f"[AWARD NOTIFICATION] Error fetching vendor contact: {e}")
+            
+            print(f"[AWARD NOTIFICATION] Final recipient email: {recipient_email}")
+            
+            # Validate email before proceeding
+            if not recipient_email or recipient_email == 'vendor@example.com' or not recipient_email.strip():
+                return Response({
+                    'success': False,
+                    'error': 'Vendor email not found. Please ensure the vendor has provided their contact email in the RFP response or in the vendor profile.',
+                    'details': 'Email could not be found in response_documents or vendor_contacts table'
+                }, status=status.HTTP_400_BAD_REQUEST)
             
             # Generate secure token for response
             import secrets
@@ -2114,27 +2300,54 @@ If you have questions, please contact the RFP team directly.
 """
                 
                 # Send email
-                email_sent = send_mail(
-                    subject=subject,
-                    message=email_body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[recipient_email],
-                    fail_silently=False
-                )
-                
-                if email_sent:
-                    print(f"Email sent successfully to {recipient_email}")
-                    notification.notification_status = 'sent'
-                    notification.sent_date = timezone.now()
-                else:
-                    print(f"Failed to send email to {recipient_email}")
+                try:
+                    email_sent = send_mail(
+                        subject=subject,
+                        message=email_body,
+                        from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@tprm.com',
+                        recipient_list=[recipient_email],
+                        fail_silently=False
+                    )
+                    
+                    if email_sent:
+                        print(f"[AWARD NOTIFICATION] ✅ Email sent successfully to {recipient_email}")
+                        notification.notification_status = 'sent'
+                        notification.sent_date = timezone.now()
+                    else:
+                        print(f"[AWARD NOTIFICATION] ❌ Failed to send email to {recipient_email}")
+                        notification.notification_status = 'pending'
+                        notification.save()
+                        # Return error response
+                        return Response({
+                            'success': False,
+                            'error': f'Failed to send email to {recipient_email}. Please check email configuration.',
+                            'recipient_email': recipient_email
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                except Exception as send_error:
+                    print(f"[AWARD NOTIFICATION] ❌ Error sending email: {str(send_error)}")
+                    import traceback
+                    traceback.print_exc()
                     notification.notification_status = 'pending'
+                    notification.save()
+                    # Return error response
+                    return Response({
+                        'success': False,
+                        'error': f'Error sending email: {str(send_error)}',
+                        'recipient_email': recipient_email
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 
             except Exception as email_error:
-                print(f"Error sending email: {str(email_error)}")
-                # Still mark as sent for now, but log the error
-                notification.notification_status = 'sent'
-                notification.sent_date = timezone.now()
+                print(f"[AWARD NOTIFICATION] ❌ Error in email sending block: {str(email_error)}")
+                import traceback
+                traceback.print_exc()
+                # Don't mark as sent if there was an error
+                notification.notification_status = 'pending'
+                notification.save()
+                return Response({
+                    'success': False,
+                    'error': f'Error sending email notification: {str(email_error)}',
+                    'recipient_email': recipient_email
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
             notification.save()
             
@@ -2759,31 +2972,57 @@ def get_primary_contacts(request):
         # Import Django's database connection
         from django.db import connection
         
-        # Query to get primary contacts from vendor_contacts table
+        # Query to get primary contacts from vendor_contacts table using tprm_integration schema
         with connection.cursor() as cursor:
             # First, get vendor information
             vendor_placeholders = ','.join(['%s'] * len(vendor_ids))
-            cursor.execute(f"""
-                SELECT 
-                    v.vendor_id,
-                    v.company_name,
-                    vc.contact_id,
-                    vc.first_name,
-                    vc.last_name,
-                    vc.email,
-                    vc.phone,
-                    vc.mobile,
-                    vc.designation,
-                    vc.department,
-                    vc.contact_type
-                FROM vendors v
-                LEFT JOIN vendor_contacts vc ON v.vendor_id = vc.vendor_id 
-                    AND vc.contact_type = 'PRIMARY' 
-                    AND vc.is_active = 1
-                WHERE v.vendor_id IN ({vendor_placeholders})
-                    AND v.status = 'APPROVED'
-                ORDER BY vc.is_primary DESC, vc.contact_id ASC
-            """, vendor_ids)
+            try:
+                # Try with tprm_integration schema
+                cursor.execute(f"""
+                    SELECT 
+                        v.vendor_id,
+                        v.company_name,
+                        vc.contact_id,
+                        vc.first_name,
+                        vc.last_name,
+                        vc.email,
+                        vc.phone,
+                        vc.mobile,
+                        vc.designation,
+                        vc.department,
+                        vc.contact_type
+                    FROM tprm_integration.vendors v
+                    LEFT JOIN tprm_integration.vendor_contacts vc ON v.vendor_id = vc.vendor_id 
+                        AND (vc.contact_type = 'PRIMARY' OR vc.is_primary = 1 OR vc.is_primary = '1' OR vc.is_primary = 'Y')
+                        AND (vc.is_active = 1 OR vc.is_active = '1' OR vc.is_active = 'Y' OR vc.is_active IS NULL)
+                    WHERE v.vendor_id IN ({vendor_placeholders})
+                        AND v.status = 'APPROVED'
+                    ORDER BY vc.is_primary DESC, vc.contact_id ASC
+                """, vendor_ids)
+            except Exception as schema_error:
+                # Fallback: try without schema prefix
+                print(f"[WARNING] Failed to query with tprm_integration schema: {str(schema_error)}")
+                cursor.execute(f"""
+                    SELECT 
+                        v.vendor_id,
+                        v.company_name,
+                        vc.contact_id,
+                        vc.first_name,
+                        vc.last_name,
+                        vc.email,
+                        vc.phone,
+                        vc.mobile,
+                        vc.designation,
+                        vc.department,
+                        vc.contact_type
+                    FROM vendors v
+                    LEFT JOIN vendor_contacts vc ON v.vendor_id = vc.vendor_id 
+                        AND (vc.contact_type = 'PRIMARY' OR vc.is_primary = 1 OR vc.is_primary = '1')
+                        AND (vc.is_active = 1 OR vc.is_active = '1' OR vc.is_active = 'Y' OR vc.is_active IS NULL)
+                    WHERE v.vendor_id IN ({vendor_placeholders})
+                        AND v.status = 'APPROVED'
+                    ORDER BY vc.is_primary DESC, vc.contact_id ASC
+                """, vendor_ids)
             
             rows = cursor.fetchall()
         
@@ -2956,7 +3195,7 @@ def generate_unique_token():
 
 def generate_invitation_urls(token, rfp_id):
     """Generate base invitation URLs (token-based) for a vendor."""
-    base_url = settings.EXTERNAL_BASE_URL
+    base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
     return {
         'invitation_url': f"{base_url}/invitation/{token}",
         'acknowledgment_url': f"{base_url}/acknowledge/{token}",
@@ -2985,8 +3224,8 @@ def create_vendor_invitations(request, rfp_id):
     try:
         rfp = get_object_or_404(RFP, rfp_id=rfp_id)
         
-        # Parse request data
-        data = json.loads(request.body)
+        # Parse request data - use request.data (DRF) to avoid RawPostDataException
+        data = request.data if hasattr(request, 'data') else json.loads(request.body)
         vendors = data.get('vendors', [])
         custom_message = data.get('customMessage', '')
         utm_parameters = data.get('utmParameters', {})
@@ -3851,7 +4090,8 @@ def generate_vendor_urls(request, rfp_id):
             # Generate new-style URL with query parameters
             vendor = selection.vendor
             from django.conf import settings
-            base_url = f"{settings.EXTERNAL_BASE_URL}/submit"
+            external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
+            base_url = f"{external_base_url}/submit"
             
             # URL encode the parameters
             from urllib.parse import urlencode
@@ -3897,7 +4137,8 @@ def generate_unmatched_vendor_url(rfp_id, org_name="", vendor_name="", contact_e
     Generate URL for unmatched vendors (not in system)
     """
     from django.conf import settings
-    base_url = f"{settings.EXTERNAL_BASE_URL}/submit"
+    external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
+    base_url = f"{external_base_url}/submit"
     from urllib.parse import urlencode
     
     params = {
@@ -3920,7 +4161,8 @@ def generate_open_rfp_url(rfp_id):
     Generate URL for open/public RFPs
     """
     from django.conf import settings
-    base_url = f"{settings.EXTERNAL_BASE_URL}/submit/open"
+    external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
+    base_url = f"{external_base_url}/submit/open"
     from urllib.parse import urlencode
     
     params = {
@@ -3991,37 +4233,80 @@ def create_unmatched_vendor(request, rfp_id):
     API endpoint to create a new unmatched vendor
     """
     try:
+        import traceback
+        print(f"[DEBUG] create_unmatched_vendor called for rfp_id: {rfp_id}")
+        
+        # Get RFP
         rfp = get_object_or_404(RFP, rfp_id=rfp_id)
-        data = json.loads(request.body)
+        print(f"[DEBUG] RFP found: {rfp.rfp_id} - {rfp.rfp_title}")
+        
+        # Parse request data
+        # Since we're using @api_view decorator, request.data is always available (DRF)
+        # DO NOT access request.body after request.data has been read, as it will raise RawPostDataException
+        try:
+            # Use request.data directly (DRF handles JSON parsing automatically)
+            data = request.data
+            print(f"[DEBUG] Using request.data: {data}")
+        except Exception as e:
+            print(f"[ERROR] Failed to access request.data: {str(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            return JsonResponse({'error': 'Invalid request data format'}, status=400)
         
         # Validate required fields
         required_fields = ['vendor_name', 'vendor_email', 'vendor_phone', 'company_name']
+        missing_fields = []
         for field in required_fields:
             if not data.get(field):
-                return JsonResponse({'error': f'{field} is required'}, status=400)
+                missing_fields.append(field)
+        
+        if missing_fields:
+            error_msg = f'Missing required fields: {", ".join(missing_fields)}'
+            print(f"[ERROR] {error_msg}")
+            return JsonResponse({'error': error_msg, 'missing_fields': missing_fields}, status=400)
+        
+        print(f"[DEBUG] Creating unmatched vendor with data: vendor_name={data['vendor_name']}, email={data['vendor_email']}, phone={data['vendor_phone']}, company={data['company_name']}")
         
         # Create unmatched vendor
+        # Note: RFPUnmatchedVendor model doesn't have an rfp ForeignKey field
         unmatched_vendor = RFPUnmatchedVendor.objects.create(
-            vendor_name=data['vendor_name'],
-            vendor_email=data['vendor_email'],
-            vendor_phone=data['vendor_phone'],
-            company_name=data['company_name'],
+            vendor_name=str(data['vendor_name']).strip(),
+            vendor_email=str(data['vendor_email']).strip(),
+            vendor_phone=str(data.get('vendor_phone', '')).strip() if data.get('vendor_phone') else '',
+            company_name=str(data['company_name']).strip(),
             submission_data=data.get('submission_data', {}),
             matching_status=data.get('matching_status', 'unmatched')
         )
+        
+        print(f"[DEBUG] Unmatched vendor created successfully: unmatched_id={unmatched_vendor.unmatched_id}")
         
         return JsonResponse({
             'success': True,
             'message': 'Unmatched vendor created successfully',
             'unmatched_id': unmatched_vendor.unmatched_id,
             'vendor_name': unmatched_vendor.vendor_name,
-            'company_name': unmatched_vendor.company_name
+            'company_name': unmatched_vendor.company_name,
+            'vendor_email': unmatched_vendor.vendor_email,
+            'matching_status': unmatched_vendor.matching_status
         })
         
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON data'}, status=400)
+    except json.JSONDecodeError as e:
+        error_msg = f'Invalid JSON data: {str(e)}'
+        print(f"[ERROR] {error_msg}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        return JsonResponse({'error': error_msg}, status=400)
     except Exception as e:
-        return JsonResponse({'error': f'Failed to create unmatched vendor: {str(e)}'}, status=500)
+        error_msg = f'Failed to create unmatched vendor: {str(e)}'
+        print(f"[ERROR] {error_msg}")
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[ERROR] Traceback: {error_trace}")
+        return JsonResponse({
+            'error': error_msg,
+            'detail': str(e),
+            'traceback': error_trace if settings.DEBUG else None
+        }, status=500)
 
 
 @api_view(['GET'])
@@ -4051,9 +4336,9 @@ def get_approved_vendors(request, rfp_id):
         
         vendor_data = []
         for vendor in approved_vendors:
-            # Use default values for capabilities and certifications since tables don't exist
-            capabilities = ['Software Development', 'Cloud Services']  # Default capabilities
-            certifications = ['ISO 27001', 'SOC 2']  # Default certifications
+            # Only fetch actual capabilities and certifications from database - no defaults
+            capabilities = []  # Must be fetched from vendor_capabilities table if exists
+            certifications = []  # Must be fetched from vendor_certifications table if exists
             
             # Format employee count for display
             employee_display = "Unknown"
@@ -4110,16 +4395,16 @@ def get_approved_vendors(request, rfp_id):
                 'updated_by': vendor['updated_by'],
                 'created_at': vendor['created_at'].isoformat(),
                 'updated_at': vendor['updated_at'].isoformat(),
-                # Additional fields for UI (using default values since fields don't exist in DB)
-                'email': 'contact@example.com',  # Default email
-                'phone': '+1-555-0000',  # Default phone
-                'location': vendor['headquarters_country'] or 'Unknown',  # Use headquarters as location
-                'match_score': 85.0,  # Default match score
-                'rating': 4.5,  # Default rating
-                'experience_years': 5,  # Default experience
-                'capabilities': capabilities,
-                'certifications': certifications,
-                'category': category
+                # Only return actual data from database - no fallback/default values
+                'email': None,  # Must be fetched from vendor_contacts table
+                'phone': None,  # Must be fetched from vendor_contacts table
+                'location': vendor['headquarters_country'] or None,  # Only actual location
+                'match_score': float(vendor.get('match_score', 0)) if vendor.get('match_score') else 0,  # Only actual match score
+                'rating': None,  # No default - must be calculated or stored
+                'experience_years': None,  # No default - must be calculated from dates
+                'capabilities': [],  # Only actual capabilities from database
+                'certifications': [],  # Only actual certifications from database
+                'category': category  # Calculated from employee_count, not default
             })
         
         return JsonResponse(vendor_data, safe=False)
@@ -4159,8 +4444,8 @@ def vendor_manual_entry(request, rfp_id):
     try:
         rfp = get_object_or_404(RFP, rfp_id=rfp_id)
         
-        # Parse JSON data from request
-        data = json.loads(request.body)
+        # Parse JSON data from request - use request.data (DRF) to avoid RawPostDataException
+        data = request.data if hasattr(request, 'data') else json.loads(request.body)
         
         # Extract vendor data
         company_name = data.get('company_name', '').strip()
@@ -4200,8 +4485,8 @@ def vendor_manual_entry(request, rfp_id):
             'certifications': certifications
         }
         
+        # Note: RFPUnmatchedVendor model doesn't have an rfp ForeignKey field
         unmatched_vendor = RFPUnmatchedVendor.objects.create(
-            rfp=rfp,
             vendor_name=company_name,  # Use company_name as vendor_name
             vendor_email=email,
             vendor_phone=phone,
@@ -4312,8 +4597,8 @@ def vendor_bulk_upload(request, rfp_id):
                 }
                 
                 # Create unmatched vendor entry
+                # Note: RFPUnmatchedVendor model doesn't have an rfp ForeignKey field
                 unmatched_vendor = RFPUnmatchedVendor.objects.create(
-                    rfp=rfp,
                     vendor_name=company_name,
                     vendor_email=email,
                     vendor_phone=phone,
@@ -4452,23 +4737,50 @@ def get_all_approved_vendors(request):
         
         vendor_data = []
         for vendor in approved_vendors:
-            # Use default values for capabilities and certifications since tables don't exist
-            capabilities = ['Software Development', 'Cloud Services']  # Default capabilities
-            certifications = ['ISO 27001', 'SOC 2']  # Default certifications
+            # Only fetch actual capabilities and certifications from database - no defaults
+            capabilities = []  # Must be fetched from vendor_capabilities table if exists
+            certifications = []  # Must be fetched from vendor_certifications table if exists
             
-            # Generate primary contact information if not available
-            primary_email = vendor.get('email', '')
-            primary_phone = vendor.get('phone', '')
-            
-            # If no email/phone in vendor record, generate placeholder contact info
-            if not primary_email:
-                # Generate email based on company name
-                company_clean = vendor['company_name'].lower().replace(' ', '').replace('inc', '').replace('llc', '').replace('corp', '')
-                primary_email = f"contact@{company_clean}.com"
-            
-            if not primary_phone:
-                # Generate placeholder phone number
-                primary_phone = "+1 (555) 000-0000"
+            # Fetch primary contact from vendor_contacts table - no placeholder generation
+            primary_email = None
+            primary_phone = None
+            try:
+                with connection.cursor() as cursor:
+                    # Try with flexible conditions to find primary contact
+                    try:
+                        cursor.execute('''
+                            SELECT email, phone, mobile
+                            FROM tprm_integration.vendor_contacts
+                            WHERE vendor_id = %s 
+                            AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1' OR is_primary = 'Y')
+                            AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                            ORDER BY is_primary DESC, contact_id ASC
+                            LIMIT 1
+                        ''', [vendor['vendor_id']])
+                        contact = cursor.fetchone()
+                    except Exception as schema_error:
+                        # Fallback: try without schema prefix
+                        cursor.execute('''
+                            SELECT email, phone, mobile
+                            FROM vendor_contacts
+                            WHERE vendor_id = %s 
+                            AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1')
+                            AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                            ORDER BY is_primary DESC, contact_id ASC
+                            LIMIT 1
+                        ''', [vendor['vendor_id']])
+                        contact = cursor.fetchone()
+                    
+                    if contact:
+                        primary_email = contact[0] or None
+                        primary_phone = contact[1] or contact[2] if len(contact) > 2 else None
+            except Exception as contact_error:
+                # If contact fetch fails, leave as None - no fallback
+                print(f"[WARNING] Could not fetch contact for vendor {vendor['vendor_id']}: {str(contact_error)}")
+                import traceback
+                print(f"[WARNING] Traceback: {traceback.format_exc()}")
+                primary_email = None
+                primary_phone = None
             
             vendor_info = {
                 'vendor_id': vendor['vendor_id'],
@@ -4493,12 +4805,12 @@ def get_all_approved_vendors(request):
                 'phone': primary_phone,
                 'contact_email': primary_email,  # Alias for compatibility
                 'contact_phone': primary_phone,  # Alias for compatibility
-                # Default values for missing fields
-                'match_score': 85.0,  # Default match score
-                'rating': 4.5,        # Default rating
-                'experience_years': 5, # Default experience
-                'capabilities': capabilities,    # Default capabilities list
-                'certifications': certifications,  # Default certifications list
+                # Only return actual data from database - no fallback/default values
+                'match_score': float(vendor.get('match_score', 0)) if vendor.get('match_score') else 0,
+                'rating': None,  # No default rating - must be calculated or stored
+                'experience_years': None,  # No default - must be calculated from dates
+                'capabilities': capabilities if capabilities else [],  # Only actual capabilities
+                'certifications': certifications if certifications else [],  # Only actual certifications
             }
             vendor_data.append(vendor_info)
         
@@ -4526,44 +4838,109 @@ def get_all_approved_vendors(request):
 def get_vendor_primary_contact(request, vendor_id):
     """Get primary contact for a vendor"""
     try:
-        # Query vendor_contacts table for primary contact
+        import traceback
+        print(f"[DEBUG] Fetching primary contact for vendor_id: {vendor_id}")
+        
+        # Query vendor_contacts table for primary contact using tprm_integration schema
         with connection.cursor() as cursor:
-            cursor.execute('''
-                SELECT contact_id, first_name, last_name, email, phone, mobile, designation
-                FROM vendor_contacts
-                WHERE vendor_id = %s AND contact_type = 'PRIMARY' AND is_primary = 1 AND is_active = 1
-                LIMIT 1
-            ''', [vendor_id])
-            contact = cursor.fetchone()
+            contact = None
+            schema_used = None
+            
+            # Try with tprm_integration schema first
+            try:
+                print(f"[DEBUG] Trying tprm_integration.vendor_contacts for vendor_id: {vendor_id}")
+                
+                # First, try to get any contact for this vendor (most permissive query)
+                # This will help us see what data actually exists
+                cursor.execute('''
+                    SELECT contact_id, first_name, last_name, email, phone, mobile, designation, department,
+                           contact_type, is_primary, is_active
+                    FROM tprm_integration.vendor_contacts
+                    WHERE vendor_id = %s
+                    ORDER BY 
+                        CASE WHEN is_primary = 1 OR is_primary = '1' OR is_primary = 'Y' THEN 0 ELSE 1 END,
+                        CASE WHEN contact_type = 'PRIMARY' THEN 0 ELSE 1 END,
+                        contact_id ASC
+                    LIMIT 1
+                ''', [vendor_id])
+                contact = cursor.fetchone()
+                schema_used = 'tprm_integration'
+                
+                if contact:
+                    print(f"[DEBUG] Found contact with permissive query: contact_id={contact[0]}, contact_type={contact[8] if len(contact) > 8 else 'N/A'}, is_primary={contact[9] if len(contact) > 9 else 'N/A'}, is_active={contact[10] if len(contact) > 10 else 'N/A'}")
+                else:
+                    print(f"[DEBUG] No contact found for vendor_id: {vendor_id} in tprm_integration.vendor_contacts")
+                        
+            except Exception as schema_error:
+                # Fallback: try without schema prefix
+                print(f"[WARNING] Failed to query with tprm_integration schema: {str(schema_error)}")
+                import traceback
+                print(f"[WARNING] Schema error traceback: {traceback.format_exc()}")
+                try:
+                    cursor.execute('''
+                        SELECT contact_id, first_name, last_name, email, phone, mobile, designation, department,
+                               contact_type, is_primary, is_active
+                        FROM vendor_contacts
+                        WHERE vendor_id = %s
+                        ORDER BY 
+                            CASE WHEN is_primary = 1 OR is_primary = '1' THEN 0 ELSE 1 END,
+                            CASE WHEN contact_type = 'PRIMARY' THEN 0 ELSE 1 END,
+                            contact_id ASC
+                        LIMIT 1
+                    ''', [vendor_id])
+                    contact = cursor.fetchone()
+                    schema_used = 'default'
+                    if contact:
+                        print(f"[DEBUG] Found contact without schema prefix")
+                except Exception as fallback_error:
+                    print(f"[ERROR] Fallback query also failed: {str(fallback_error)}")
+                    import traceback
+                    print(f"[ERROR] Fallback error traceback: {traceback.format_exc()}")
+                    raise fallback_error
             
             if contact:
+                print(f"[DEBUG] Contact found: contact_id={contact[0]}, name={contact[1]} {contact[2]}, email={contact[3]}")
+                # Handle cases where department might not be in the result
+                # Extract only the first 8 fields (contact_id through department)
                 contact_data = {
                     'contact_id': contact[0],
-                    'first_name': contact[1],
-                    'last_name': contact[2],
-                    'email': contact[3],
-                    'phone': contact[4],
-                    'mobile': contact[5],
-                    'designation': contact[6]
+                    'first_name': contact[1] or '' if contact[1] is not None else '',
+                    'last_name': contact[2] or '' if contact[2] is not None else '',
+                    'email': contact[3] or '' if contact[3] is not None else '',
+                    'phone': contact[4] or '' if contact[4] is not None else '',
+                    'mobile': contact[5] or '' if contact[5] is not None else '',
+                    'designation': contact[6] or '' if contact[6] is not None else '',
+                    'department': contact[7] or '' if len(contact) > 7 and contact[7] is not None else ''
                 }
+                print(f"[DEBUG] Returning contact data: {contact_data}")
                 return JsonResponse({
                     'success': True,
                     'contact': contact_data
                 })
             else:
+                print(f"[DEBUG] No contact found for vendor_id: {vendor_id}")
+                # Return success but with no contact found (not an error)
                 return JsonResponse({
                     'success': False,
-                    'error': 'No primary contact found for vendor'
+                    'error': 'No primary contact found for vendor',
+                    'contact': None
                 })
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[ERROR] get_vendor_primary_contact error: {str(e)}")
+        print(f"[ERROR] Traceback: {error_trace}")
         return JsonResponse({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'contact': None
         }, status=500)
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
+@api_view(['POST'])
+@authentication_classes([UnifiedJWTAuthentication])
+@permission_classes([SimpleAuthenticatedPermission])
+@rbac_rfp_required('view_rfp')
 def calculate_vendor_match_scores(request, rfp_id):
     """
     Calculate match scores for vendors based on RFP requirements
@@ -4588,9 +4965,14 @@ def calculate_vendor_match_scores(request, rfp_id):
                 'error': 'RFP not found'
             }, status=404)
         
-        # Get vendor IDs from request
-        data = json.loads(request.body) if request.body else {}
-        vendor_ids = data.get('vendor_ids', [])
+        # Get vendor IDs from request body (JSON)
+        if hasattr(request, 'data'):
+            # DRF request - use request.data
+            vendor_ids = request.data.get('vendor_ids', [])
+        else:
+            # Plain Django request - parse JSON body
+            data = json.loads(request.body) if request.body else {}
+            vendor_ids = data.get('vendor_ids', [])
         
         if not vendor_ids:
             return JsonResponse({

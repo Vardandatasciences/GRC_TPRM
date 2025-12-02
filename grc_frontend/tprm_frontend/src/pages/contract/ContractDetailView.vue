@@ -567,32 +567,73 @@ export default {
           
           // Find the current user's approval for this contract
           const currentUserId = getCurrentUserId()
-          console.log('Looking for approval for user:', currentUserId, 'contract:', contractId)
+          console.log('🔍 Looking for approval for user:', currentUserId, 'contract:', contractId)
+          console.log('🔍 Available approvals:', response.data.map(a => ({
+            approval_id: a.approval_id,
+            assigner_id: a.assigner_id,
+            assignee_id: a.assignee_id,
+            assigner_id_type: typeof a.assigner_id,
+            assignee_id_type: typeof a.assignee_id,
+            object_id: a.object_id
+          })))
+          
+          // Normalize approval IDs for comparison (handle both string and number)
+          const normalizeId = (id) => {
+            if (id === null || id === undefined) return null
+            const num = typeof id === 'string' ? parseInt(id, 10) : id
+            return isNaN(num) ? null : num
+          }
           
           // First, check if user is an assignee (they need to comment)
-          const currentApproval = response.data.find(approval => 
-            approval.assignee_id == currentUserId && 
-            approval.object_id == contractId
-          )
+          // This is the priority - assignees should be able to comment
+          const currentApproval = response.data.find(approval => {
+            const assigneeId = normalizeId(approval.assignee_id)
+            const objId = normalizeId(approval.object_id)
+            const contractIdNum = normalizeId(contractId)
+            const match = assigneeId === currentUserId && objId === contractIdNum
+            if (match) {
+              console.log('✅ Found approval where user is ASSIGNEE:', {
+                approval_id: approval.approval_id,
+                assignee_id: approval.assignee_id,
+                normalized_assignee_id: assigneeId,
+                current_user_id: currentUserId,
+                match
+              })
+            }
+            return match
+          })
           
           // Also check if user is an assigner (they can approve/reject)
-          const userIsAssigner = response.data.some(approval =>
-            approval.assigner_id == currentUserId &&
-            approval.object_id == contractId
-          )
+          const userIsAssigner = response.data.some(approval => {
+            const assignerId = normalizeId(approval.assigner_id)
+            const objId = normalizeId(approval.object_id)
+            const contractIdNum = normalizeId(contractId)
+            const match = assignerId === currentUserId && objId === contractIdNum
+            if (match) {
+              console.log('✅ Found approval where user is ASSIGNER:', {
+                approval_id: approval.approval_id,
+                assigner_id: approval.assigner_id,
+                normalized_assigner_id: assignerId,
+                current_user_id: currentUserId,
+                match
+              })
+            }
+            return match
+          })
           
           if (currentApproval) {
+            // User is an ASSIGNEE - they should be able to comment
             currentApprovalId.value = currentApproval.approval_id
             isAssigner.value = false
-            console.log('Found current approval ID (as assignee):', currentApprovalId.value)
+            console.log('✅ User is ASSIGNEE - can comment. Approval ID:', currentApprovalId.value)
           } else if (userIsAssigner) {
-            console.log('User is an assigner for this contract, not an assignee')
-            // User is viewing as assigner - they don't need to comment
-            // They can approve/reject from the My Contract Approvals page
+            // User is an ASSIGNER - they should see the info message
+            console.log('ℹ️ User is ASSIGNER (not assignee) - showing info message')
             currentApprovalId.value = null
             isAssigner.value = true
           } else {
-            console.warn('No approval found for current user and contract')
+            // No approval found - try to create one
+            console.warn('⚠️ No approval found for current user and contract')
             isAssigner.value = false
             // Try to create a new approval for the current user
             await createApprovalForCurrentUser(contractId)
@@ -608,29 +649,43 @@ export default {
       try {
         // First try to get from Vuex store
         const currentUser = store.getters?.['auth/currentUser']
-        if (currentUser && (currentUser.userid || currentUser.user_id)) {
-          console.log('Found user ID from store:', currentUser.userid || currentUser.user_id)
-          return currentUser.userid || currentUser.user_id
+        if (currentUser) {
+          // Check all possible user ID fields
+          const userId = currentUser.userid || currentUser.user_id || currentUser.UserId || currentUser.id
+          if (userId) {
+            // Normalize to number for consistent comparison
+            const userIdNum = typeof userId === 'string' ? parseInt(userId, 10) : userId
+            if (!isNaN(userIdNum)) {
+              console.log('✅ Found user ID from store:', userIdNum, '(original:', userId, ')')
+              return userIdNum
+            }
+          }
         }
         
         // Fallback to localStorage
-        const userId = localStorage.getItem('user_id') || localStorage.getItem('userid')
-        if (userId) {
-          console.log('Found user ID from localStorage:', userId)
-          return userId
+        const localUserId = localStorage.getItem('user_id') || localStorage.getItem('userid') || localStorage.getItem('UserId')
+        if (localUserId) {
+          const userIdNum = typeof localUserId === 'string' ? parseInt(localUserId, 10) : localUserId
+          if (!isNaN(userIdNum)) {
+            console.log('✅ Found user ID from localStorage:', userIdNum)
+            return userIdNum
+          }
         }
         
         // Try to get from session storage
-        const sessionUserId = sessionStorage.getItem('user_id') || sessionStorage.getItem('userid')
+        const sessionUserId = sessionStorage.getItem('user_id') || sessionStorage.getItem('userid') || sessionStorage.getItem('UserId')
         if (sessionUserId) {
-          console.log('Found user ID from sessionStorage:', sessionUserId)
-          return sessionUserId
+          const userIdNum = typeof sessionUserId === 'string' ? parseInt(sessionUserId, 10) : sessionUserId
+          if (!isNaN(userIdNum)) {
+            console.log('✅ Found user ID from sessionStorage:', userIdNum)
+            return userIdNum
+          }
         }
         
-        console.warn('No user ID found in any source')
+        console.warn('⚠️ No user ID found in any source')
         return null
       } catch (error) {
-        console.error('Error getting current user ID:', error)
+        console.error('❌ Error getting current user ID:', error)
         return null
       }
     }

@@ -1593,13 +1593,15 @@ const navigateToPreview = () => {
     contractTerms: contractTerms.value,
     contractClauses: contractClauses.value,
     allTermQuestionnaires: allTermQuestionnaires.value, // Include questionnaires for preview page
-    selectedTemplates: selectedTemplates.value // IMPORTANT: Store selected templates so preview page knows which templates to use
+    selectedTemplates: selectedTemplates.value, // IMPORTANT: Store selected templates so preview page knows which templates to use
+    templateQuestionsCache: templateQuestionsCache.value // OPTIMIZATION: Pass cached template questions to avoid API calls in preview
   }
   
   console.log('💾 Storing preview data:', previewData)
   console.log('💾 S3 file_path in preview data:', previewData.contractData?.file_path)
   console.log(`💾 Storing ${allTermQuestionnaires.value.length} questionnaires for preview`)
   console.log(`💾 Storing selected templates:`, selectedTemplates.value)
+  console.log(`💾 Storing ${Object.keys(templateQuestionsCache.value).length} cached template question sets`)
   sessionStorage.setItem('contractPreviewData', JSON.stringify(previewData))
   
   // Navigate to preview page
@@ -2638,27 +2640,28 @@ const handleSubmitForReview = async () => {
     // The preview page will handle the actual database save
     console.log('✅ Navigating to preview page for contract review')
     
-    // Load questionnaires in background (non-blocking) if terms exist
-    // Store current questionnaires in sessionStorage, ContractPreview will load if needed
-    if (contractTerms.value.length > 0 && allTermQuestionnaires.value.length === 0) {
-      console.log('📋 Loading questionnaires in background (non-blocking)...')
-      // Don't await - load in background and update sessionStorage when done
-      loadTermQuestionnaires().then(() => {
-        // Update sessionStorage with loaded questionnaires
-        const previewData = sessionStorage.getItem('contractPreviewData')
-        if (previewData) {
-          try {
-            const data = JSON.parse(previewData)
-            data.allTermQuestionnaires = allTermQuestionnaires.value
-            sessionStorage.setItem('contractPreviewData', JSON.stringify(data))
-            console.log(`📋 Updated sessionStorage with ${allTermQuestionnaires.value.length} questionnaires`)
-          } catch (e) {
-            console.error('Error updating sessionStorage with questionnaires:', e)
-          }
+    // OPTIMIZATION: Pre-load ALL questionnaires for ALL terms in parallel BEFORE navigating
+    // This ensures preview page has all data immediately without making API calls
+    if (contractTerms.value.length > 0) {
+      console.log('📋 Pre-loading all questionnaires for all terms in parallel...')
+      isLoading.value = true
+      
+      try {
+        // Load questionnaires for all terms if not already loaded
+        if (allTermQuestionnaires.value.length === 0) {
+          await loadTermQuestionnaires()
         }
-      }).catch(err => {
-        console.error('Error loading questionnaires in background:', err)
-      })
+        
+        // Pre-load template questions for ALL selected templates in parallel
+        await preloadAllTemplateQuestions()
+        
+        console.log(`✅ Pre-loaded ${allTermQuestionnaires.value.length} questionnaires`)
+      } catch (err) {
+        console.error('❌ Error pre-loading questionnaires:', err)
+        // Continue anyway - preview page will handle missing data
+      } finally {
+        isLoading.value = false
+      }
     }
     
     navigateToPreview()
@@ -2842,18 +2845,27 @@ const handleCreateSubcontract = async () => {
       const mainContractId = response.data.contract_id
       console.log('✅ Main contract saved with ID:', mainContractId)
       
-      // Save terms and clauses if any exist
-      if (contractTerms.value.length > 0) {
-        await saveContractTerms(mainContractId)
-      }
-      
-      if (contractClauses.value.length > 0) {
-        await saveContractClauses(mainContractId)
-      }
-      
-      // Navigate to subcontract creation page with the main contract ID
+      // Navigate immediately - don't wait for terms/clauses to save
       console.log('🔄 Navigating to subcontract creation with parent ID:', mainContractId)
       router.push(`/contracts/${mainContractId}/subcontract`)
+      
+      // Save terms and clauses in the background (non-blocking)
+      // This allows the user to see the subcontract page immediately
+      if (contractTerms.value.length > 0 || contractClauses.value.length > 0) {
+        console.log('📋 Saving terms and clauses in background...')
+        Promise.all([
+          contractTerms.value.length > 0 ? saveContractTerms(mainContractId).catch(err => {
+            console.error('❌ Error saving terms in background:', err)
+          }) : Promise.resolve(),
+          contractClauses.value.length > 0 ? saveContractClauses(mainContractId).catch(err => {
+            console.error('❌ Error saving clauses in background:', err)
+          }) : Promise.resolve()
+        ]).then(() => {
+          console.log('✅ Terms and clauses saved in background')
+        }).catch(err => {
+          console.error('❌ Error saving terms/clauses in background:', err)
+        })
+      }
     } else {
       errors.value.general = response.message || 'Failed to save main contract'
     }
@@ -3072,6 +3084,16 @@ const handleFileDrop = (event) => {
   }
 }
 
+// Helper function to get stored token (compatible with GRC auth)
+const getStoredToken = () => {
+  const keys = ['access_token', 'session_token', 'token', 'jwt_token']
+  for (const key of keys) {
+    const val = localStorage.getItem(key)
+    if (val) return val
+  }
+  return null
+}
+
 const handleFileUpload = async (event) => {
   console.log('📁 File upload triggered:', event)
   
@@ -3123,6 +3145,12 @@ const handleFileUpload = async (event) => {
     // Hint backend to run only contract extraction (safe no-op if unsupported)
     uploadFormData.append('mode', 'contract_only')
     
+    // Get authentication token
+    const token = getStoredToken()
+    if (!token) {
+      throw new Error('Authentication required. Please log in to upload files.')
+    }
+    
     console.log('📤 Uploading file to OCR service...')
     
     // Simulate progress updates
@@ -3132,22 +3160,79 @@ const handleFileUpload = async (event) => {
       }
         }, 500)
     
-    // Call the OCR API endpoint
+    // Call the OCR API endpoint with authentication
+    // Note: Don't set Content-Type header - browser will set it with boundary for FormData
+    const headers = {
+      'Authorization': `Bearer ${token}`
+    }
+    
     const response = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
       method: 'POST',
+      headers: headers,
       body: uploadFormData,
-      // Don't set Content-Type header - browser will set it with boundary for FormData
     })
     
     clearInterval(progressInterval)
-    uploadProgress.value = 100
     
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
+    // Handle 401 errors - try to refresh token and retry
+    let finalResponse = response
+    if (response.status === 401) {
+      console.log('🔄 401 error detected, attempting token refresh...')
+      
+      try {
+        // Try to refresh token
+        const refreshToken = localStorage.getItem('refresh_token')
+        if (refreshToken) {
+          const refreshResponse = await fetch('http://localhost:8000/api/jwt/refresh/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ refresh_token: refreshToken })
+          })
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json()
+            if (refreshData.status === 'success') {
+              // Update tokens
+              localStorage.setItem('access_token', refreshData.access_token)
+              if (refreshData.refresh_token) {
+                localStorage.setItem('refresh_token', refreshData.refresh_token)
+              }
+              
+              // Retry the upload with new token
+              console.log('✅ Token refreshed, retrying OCR upload...')
+              const newToken = getStoredToken()
+              const retryHeaders = {
+                'Authorization': `Bearer ${newToken}`
+              }
+              
+              finalResponse = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
+                method: 'POST',
+                headers: retryHeaders,
+                body: uploadFormData,
+              })
+            }
+          }
+        }
+      } catch (refreshError) {
+        console.error('❌ Token refresh failed:', refreshError)
+        // Continue to error handling below
+      }
     }
     
-  const result = await response.json()
+    uploadProgress.value = 100
+    
+    if (!finalResponse.ok) {
+      const errorData = await finalResponse.json().catch(() => ({ error: 'Unknown error' }))
+      const errorMessage = errorData.error || `HTTP ${finalResponse.status}: ${finalResponse.statusText}`
+      if (finalResponse.status === 401) {
+        throw new Error('Authentication required. Please log in again.')
+      }
+      throw new Error(errorMessage)
+    }
+    
+  const result = await finalResponse.json()
   console.log('✅ OCR processing completed:', result)
   
   // Log and store S3 upload information
@@ -4175,6 +4260,60 @@ function getQuestionnaireCount(termTitle, termId) {
   }).length
 }
 
+// Cache for template questions to avoid redundant API calls
+const templateQuestionsCache = ref({}) // { template_id: questions[] }
+
+// Pre-load ALL template questions for selected templates in parallel (OPTIMIZATION)
+async function preloadAllTemplateQuestions() {
+  try {
+    const selectedTemplateIds = Object.values(selectedTemplates.value).filter(Boolean)
+    if (selectedTemplateIds.length === 0) {
+      console.log('📋 No templates selected, skipping pre-load')
+      return
+    }
+    
+    console.log(`📋 Pre-loading questions for ${selectedTemplateIds.length} selected templates in parallel...`)
+    
+    // Load all template questions in PARALLEL
+    const loadPromises = selectedTemplateIds.map(async (templateId) => {
+      // Skip if already cached
+      if (templateQuestionsCache.value[templateId]) {
+        console.log(`📋 Template ${templateId} already cached, skipping`)
+        return
+      }
+      
+      try {
+        const response = await apiService.getTemplateQuestions(templateId, null, null)
+        const questions = response.questions || []
+        
+        // Cache the questions
+        templateQuestionsCache.value[templateId] = questions.map(q => ({
+          question_id: q.question_id,
+          question_text: q.question_text || '',
+          question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
+          is_required: q.is_required || false,
+          scoring_weightings: q.weightage || 10.0,
+          question_category: q.question_category || 'Contract',
+          options: q.options || [],
+          help_text: q.help_text || '',
+          metric_name: q.metric_name || null,
+          allow_document_upload: q.allow_document_upload || false,
+          template_id: templateId
+        }))
+        
+        console.log(`✅ Cached ${templateQuestionsCache.value[templateId].length} questions for template ${templateId}`)
+      } catch (error) {
+        console.error(`❌ Error loading questions for template ${templateId}:`, error)
+      }
+    })
+    
+    await Promise.all(loadPromises)
+    console.log(`✅ Pre-loaded questions for ${selectedTemplateIds.length} templates`)
+  } catch (error) {
+    console.error('❌ Error in preloadAllTemplateQuestions:', error)
+  }
+}
+
 // Get questionnaires for a specific term (used when saving)
 // Now uses selected template if available, otherwise falls back to direct questionnaires
 async function getQuestionnairesForTerm(termId, termCategory, termTitle) {
@@ -4185,8 +4324,14 @@ async function getQuestionnairesForTerm(termId, termCategory, termTitle) {
   if (selectedTemplateId) {
     try {
       console.log(`📋 Using selected template ${selectedTemplateId} for term ${termIdStr}`)
-      // When a template is selected, fetch ALL questions from that template
-      // Don't pass term_id or term_category to get ALL questions (not filtered)
+      
+      // Check cache first (OPTIMIZATION)
+      if (templateQuestionsCache.value[selectedTemplateId]) {
+        console.log(`📋 Using cached questions for template ${selectedTemplateId}`)
+        return templateQuestionsCache.value[selectedTemplateId]
+      }
+      
+      // If not cached, fetch from API
       const response = await apiService.getTemplateQuestions(selectedTemplateId, null, null)
       const questions = response.questions || []
       
@@ -4206,6 +4351,9 @@ async function getQuestionnairesForTerm(termId, termCategory, termTitle) {
         allow_document_upload: q.allow_document_upload || false,
         template_id: selectedTemplateId // Include template_id for reference
       }))
+      
+      // Cache for future use
+      templateQuestionsCache.value[selectedTemplateId] = formattedQuestions
       
       console.log(`📋 Returning ${formattedQuestions.length} formatted questions from selected template`)
       return formattedQuestions
@@ -4277,6 +4425,13 @@ async function loadTemplatesForTerm(termOrTitle, termIdArg = null, termCategoryA
 
     console.log('📋 Loading templates for term:', { termTitle, termId: termIdStr, termCategory })
     
+    // Only make API call if we have at least termCategory or termTitle
+    if (!termCategory && !termTitle && !termIdStr) {
+      console.warn('⚠️ No term category, title, or ID provided - skipping template load')
+      loadedTemplatesForTerms.value.add(termIdStr || 'empty')
+      return
+    }
+    
     const response = await apiService.getTemplatesByTerm(termTitle, termIdStr, termCategory)
     const templates = response.templates || response || []
     
@@ -4305,7 +4460,21 @@ async function loadTemplatesForTerm(termOrTitle, termIdArg = null, termCategoryA
     // If no templates were found, we simply leave the list empty without showing a popup
   } catch (error) {
     console.error('❌ Error loading templates:', error)
-    PopupService.error(`Failed to load templates: ${error.message || 'Please try again.'}`, 'Error')
+    
+    // Don't show error popup for 500 errors if it's likely a backend issue
+    // Just log it and mark as loaded so we don't keep retrying
+    if (error.message && error.message.includes('500')) {
+      console.warn('⚠️ Server error loading templates - this may be a backend issue')
+      const termIdStr = String(termOrTitle?.term_id || termIdArg || '')
+      loadedTemplatesForTerms.value.add(termIdStr)
+      // Don't show popup for server errors - just silently fail
+      return
+    }
+    
+    // Only show popup for client-side errors (401, 403, network errors)
+    if (error.message && !error.message.includes('500')) {
+      PopupService.error(`Failed to load templates: ${error.message || 'Please try again.'}`, 'Error')
+    }
   }
 }
 
@@ -4662,16 +4831,26 @@ watch(() => contractTerms.value.map(t => t.term_category), async (newCategories,
     clearTimeout(questionnairesTimer)
   }
   questionnairesTimer = setTimeout(async () => {
-    // Load templates for terms with category changes
-    for (const term of contractTerms.value) {
-      if (term.term_category && term.term_id) {
-        // Auto-load templates when term_category is set
-        if (!hasLoadedTemplatesForTerm(term.term_id)) {
-          console.log(`🔄 Auto-loading templates for term ${term.term_id} with category ${term.term_category}`)
-          await loadTemplatesForTerm(term)
-        }
-      }
+    // OPTIMIZATION: Load templates for ALL terms in PARALLEL
+    const termsToLoad = contractTerms.value.filter(term => 
+      term.term_category && term.term_id && !hasLoadedTemplatesForTerm(term.term_id)
+    )
+    
+    if (termsToLoad.length > 0) {
+      console.log(`🔄 Auto-loading templates for ${termsToLoad.length} terms in PARALLEL...`)
+      
+      // Load all templates in parallel instead of sequentially
+      await Promise.all(
+        termsToLoad.map(term => 
+          loadTemplatesForTerm(term).catch(err => {
+            console.error(`Error loading templates for term ${term.term_id}:`, err)
+          })
+        )
+      )
+      
+      console.log(`✅ Finished loading templates for ${termsToLoad.length} terms`)
     }
+    
     // Also load questionnaires (legacy support)
     await loadTermQuestionnaires()
   }, 1000)
@@ -4690,12 +4869,21 @@ watch(activeTab, async (newTab, oldTab) => {
     closeQuestionnairesModal()
     // Small delay to ensure tab is fully rendered
     setTimeout(async () => {
-      // Load templates for all terms with categories
-      for (const term of contractTerms.value) {
-        if (term.term_category && term.term_id) {
-          await loadTemplatesForTerm(term)
-        }
+      // OPTIMIZATION: Load templates for all terms with categories in PARALLEL
+      const termsToLoad = contractTerms.value.filter(term => term.term_category && term.term_id)
+      
+      if (termsToLoad.length > 0) {
+        console.log(`🔄 Loading templates for ${termsToLoad.length} terms in PARALLEL...`)
+        
+        await Promise.all(
+          termsToLoad.map(term => 
+            loadTemplatesForTerm(term).catch(err => {
+              console.error(`Error loading templates for term ${term.term_id}:`, err)
+            })
+          )
+        )
       }
+      
       // Also load questionnaires (legacy support)
       await loadTermQuestionnaires()
       console.log('✅ Templates and questionnaires reloaded after switching to terms tab')

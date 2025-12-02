@@ -255,7 +255,7 @@ def approval_create(request):
             data['assigned_date'] = timezone.now()
         
         # Auto-populate assigner_name and assignee_name from user IDs
-        from mfa_auth.models import User
+        from tprm_backend.mfa_auth.models import User
         
         if data.get('assigner_id') and not data.get('assigner_name'):
             try:
@@ -279,7 +279,7 @@ def approval_create(request):
             # Update contract status to UNDER_REVIEW if it's a contract creation approval
             if approval.object_type == 'CONTRACT_CREATION' and approval.object_id:
                 try:
-                    from contracts.models import VendorContract
+                    # VendorContract is already imported at the top of the file
                     contract = VendorContract.objects.get(contract_id=approval.object_id)
                     if contract.status == 'PENDING_ASSIGNMENT':
                         contract.status = 'UNDER_REVIEW'
@@ -329,7 +329,7 @@ def approval_bulk_create(request):
             for approval in approvals:
                 if approval.object_type == 'CONTRACT_CREATION' and approval.object_id:
                     try:
-                        from contracts.models import VendorContract
+                        # VendorContract is already imported at the top of the file
                         contract = VendorContract.objects.get(contract_id=approval.object_id)
                         if contract.status == 'PENDING_ASSIGNMENT':
                             contract.status = 'UNDER_REVIEW'
@@ -645,7 +645,16 @@ def get_assigner_approvals(request):
         logger.info(f"Assigner approvals request - User: {request.user.userid if hasattr(request.user, 'userid') else 'N/A'}, assigner_id: {assigner_id}, filters: {request.GET}")
         
         # Build query for approvals where user is the assigner
-        queryset = ContractApproval.objects.filter(assigner_id=assigner_id)
+        # Try both int and string conversion to handle potential type mismatches
+        try:
+            assigner_id_int = int(assigner_id)
+            queryset = ContractApproval.objects.filter(assigner_id=assigner_id_int)
+            
+            # If no results with int, try string
+            if queryset.count() == 0:
+                queryset = ContractApproval.objects.filter(assigner_id=str(assigner_id))
+        except (ValueError, TypeError):
+            queryset = ContractApproval.objects.filter(assigner_id=assigner_id)
         
         # Apply additional filters
         if status_filter:
@@ -721,7 +730,7 @@ def approve_contract(request, approval_id):
         if approval.object_type == 'CONTRACT_CREATION' and approval.object_id:
             try:
                 # Update main contract status to APPROVED
-                from contracts.models import VendorContract, ContractTerm, ContractClause
+                # VendorContract, ContractTerm, and ContractClause are already imported at the top of the file
                 contract = VendorContract.objects.get(contract_id=approval.object_id)
                 contract.status = 'APPROVED'
                 contract.save()
@@ -792,7 +801,7 @@ def approve_contract(request, approval_id):
                 backup_file = backup_dir / f'contracts_backup_{timestamp}.json'
                 
                 # Export contracts data
-                from contracts.models import VendorContract, ContractTerm, ContractClause
+                # VendorContract, ContractTerm, and ContractClause are already imported at the top of the file
                 contracts_data = {
                     'backup_type': 'post_approval',
                     'approval_id': approval_id,
@@ -863,7 +872,7 @@ def reject_contract(request, approval_id):
         # Update contract, terms, clauses, and subcontracts status to REJECTED
         if approval.object_type == 'CONTRACT_CREATION' and approval.object_id:
             try:
-                from contracts.models import VendorContract, ContractTerm, ContractClause
+                # VendorContract, ContractTerm, and ContractClause are already imported at the top of the file
                 contract = VendorContract.objects.get(contract_id=approval.object_id)
                 contract.status = 'REJECTED'
                 contract.save()
@@ -930,7 +939,7 @@ def reject_contract(request, approval_id):
                 backup_file = backup_dir / f'contracts_backup_{timestamp}.json'
                 
                 # Export contracts data
-                from contracts.models import VendorContract, ContractTerm, ContractClause
+                # VendorContract, ContractTerm, and ContractClause are already imported at the top of the file
                 contracts_data = {
                     'backup_type': 'post_rejection',
                     'approval_id': approval_id,

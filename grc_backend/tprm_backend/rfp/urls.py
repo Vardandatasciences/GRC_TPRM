@@ -18,6 +18,19 @@ router.register(r'users', views.CustomUserViewSet)
 router.register(r'rfp-types', views.RFPTypeCustomFieldsViewSet)
 
 urlpatterns = [
+    # Direct paths for /api/v1/rfps/ compatibility (frontend calls these)
+    # This allows /api/v1/rfps/ and /api/v1/rfps/{id}/ to work without the double /rfps/rfps/ path
+    # Must come before router.urls to match first
+    path('', views.RFPViewSet.as_view({'get': 'list', 'post': 'create'}), name='rfp-list-direct'),
+    # Support both pk and rfp_id for detail view
+    path('<int:pk>/', views.RFPViewSet.as_view({
+        'get': 'retrieve',
+        'put': 'update',
+        'patch': 'partial_update',
+        'delete': 'destroy'
+    }), name='rfp-detail-direct'),
+    
+    # Router URLs (creates /rfps/ under the included path)
     path('', include(router.urls)),
     
     # RFP Response endpoints for vendor portal (moved to top to avoid conflicts)
@@ -64,6 +77,7 @@ urlpatterns = [
     path('invitations/<str:invitation_id>/', views_rfp_responses.get_invitation_details, name='get_invitation_details'),
     path('open-rfp/<str:rfp_number>/', views_rfp_responses.get_open_rfp_details, name='get_open_rfp_details'),
     path('open-rfp/<str:rfp_number>/create-invitation/', views_rfp_responses.create_open_invitation, name='create_open_invitation'),
+    path('rfp/<int:rfp_id>/evaluation-criteria/', views_rfp_responses.get_rfp_evaluation_criteria_by_id, name='get_rfp_evaluation_criteria_by_id'),
     path('rfp/<str:rfp_number>/evaluation-criteria/', views_rfp_responses.get_rfp_evaluation_criteria, name='get_rfp_evaluation_criteria'),
     
     # New invitation generation endpoints
@@ -73,7 +87,7 @@ urlpatterns = [
     path('send-invitation-emails/', views_invitation_generation.send_invitation_emails, name='send_invitation_emails'),
     
     # Vendor matching endpoint
-    path('rfps/<int:rfp_id>/calculate-match-scores/', views.calculate_vendor_match_scores, name='calculate_vendor_match_scores'),
+    path('<int:rfp_id>/calculate-match-scores/', views.calculate_vendor_match_scores, name='calculate_vendor_match_scores'),
 
     # Document generation endpoints
     path('rfps/<int:rfp_id>/download/word/', document_views.generate_rfp_word_document, name='rfp-download-word'),
@@ -89,9 +103,9 @@ urlpatterns = [
     path('rfps/<int:rfp_id>/vendors/bulk-select/', views.bulk_select_vendors, name='bulk_select_vendors'),
     path('rfps/<int:rfp_id>/vendors/generate-urls/', views.generate_vendor_urls, name='generate_vendor_urls'),
     path('vendors/sample-csv/', views.get_sample_csv, name='get_sample_csv'),
-    path('rfps/<int:rfp_id>/unmatched-vendors/', views.get_unmatched_vendors, name='get_unmatched_vendors'),
-    path('rfps/<int:rfp_id>/unmatched-vendors/create/', views.create_unmatched_vendor, name='create_unmatched_vendor'),
-    path('rfps/<int:rfp_id>/unmatched-vendors/bulk-upload/', views.unmatched_vendor_bulk_upload, name='unmatched_vendor_bulk_upload'),
+    path('<int:rfp_id>/unmatched-vendors/', views.get_unmatched_vendors, name='get_unmatched_vendors'),
+    path('<int:rfp_id>/unmatched-vendors/create/', views.create_unmatched_vendor, name='create_unmatched_vendor'),
+    path('<int:rfp_id>/unmatched-vendors/bulk-upload/', views.unmatched_vendor_bulk_upload, name='unmatched_vendor_bulk_upload'),
     path('rfps/<int:rfp_id>/approved-vendors/', views.get_approved_vendors, name='get_approved_vendors'),
     path('vendors/active/', views.get_all_approved_vendors, name='get_all_approved_vendors'),
     path('vendors/<int:vendor_id>/primary-contact/', views.get_vendor_primary_contact, name='get_vendor_primary_contact'),

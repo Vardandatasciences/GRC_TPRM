@@ -635,13 +635,20 @@ const fetchSLAsForDropdown = async () => {
 }
 
 const assignApproval = (sla) => {
+  if (!sla || !sla.sla_id) {
+    PopupService.error('Invalid SLA data. Please try selecting the SLA again.', 'Invalid SLA')
+    return
+  }
+  
   selectedContract.value = sla
-  form.value.object_id = sla.sla_id
-  form.value.sla_id = sla.sla_id
+  // Ensure sla_id is an integer
+  const slaIdInt = parseInt(sla.sla_id, 10)
+  form.value.object_id = slaIdInt
+  form.value.sla_id = slaIdInt
   form.value.object_type = 'SLA_CREATION'
   
   // Add the selected SLA to the SLAs list if not already present
-  const existingSLA = contracts.value.find(c => c.sla_id === sla.sla_id)
+  const existingSLA = contracts.value.find(c => c.sla_id == slaIdInt)
   if (!existingSLA) {
     contracts.value.unshift(sla) // Add to the beginning of the list
   }
@@ -673,14 +680,23 @@ const onAssigneeChange = () => {
 }
 
 const onSLAChange = () => {
-  const sla = contracts.value.find(c => c.sla_id == form.value.object_id)
+  if (!form.value.object_id) {
+    selectedContract.value = null
+    form.value.sla_id = ''
+    return
+  }
+  
+  const slaIdInt = parseInt(form.value.object_id, 10)
+  const sla = contracts.value.find(c => c.sla_id == slaIdInt)
   if (sla) {
     selectedContract.value = sla
-    form.value.sla_id = sla.sla_id
-    console.log('Selected SLA:', sla)
+    // Ensure sla_id is an integer
+    form.value.sla_id = parseInt(sla.sla_id, 10)
+    console.log('Selected SLA:', sla, 'with sla_id:', form.value.sla_id)
   } else {
     selectedContract.value = null
     form.value.sla_id = ''
+    console.warn('SLA not found for object_id:', form.value.object_id)
   }
 }
 
@@ -688,10 +704,36 @@ const createAssignment = async () => {
   isSubmitting.value = true
   
   try {
-    console.log('Creating SLA approval assignment:', form.value)
+    // Validate that sla_id is set and is a valid integer
+    if (!form.value.sla_id && !form.value.object_id) {
+      PopupService.error('Please select an SLA before creating the assignment.', 'Missing SLA')
+      isSubmitting.value = false
+      return
+    }
+    
+    // Prepare the data with proper type conversions
+    const approvalData = {
+      ...form.value,
+      sla_id: form.value.sla_id ? parseInt(form.value.sla_id, 10) : (form.value.object_id ? parseInt(form.value.object_id, 10) : null),
+      object_id: form.value.object_id ? parseInt(form.value.object_id, 10) : null,
+      assigner_id: form.value.assigner_id ? parseInt(form.value.assigner_id, 10) : null,
+      assignee_id: form.value.assignee_id ? parseInt(form.value.assignee_id, 10) : null,
+      workflow_id: form.value.workflow_id ? parseInt(form.value.workflow_id, 10) : 1
+    }
+    
+    // Remove empty or null values that might cause issues
+    Object.keys(approvalData).forEach(key => {
+      if (approvalData[key] === '' || approvalData[key] === null || approvalData[key] === undefined) {
+        if (key !== 'comment_text') { // Allow empty comment_text
+          delete approvalData[key]
+        }
+      }
+    })
+    
+    console.log('Creating SLA approval assignment with prepared data:', approvalData)
     
     // Call the API to create the approval assignment
-    const response = await slaApprovalApi.createApproval(form.value)
+    const response = await slaApprovalApi.createApproval(approvalData)
     
     console.log('Assignment created successfully:', response)
     
@@ -710,12 +752,29 @@ const createAssignment = async () => {
     
     // Handle different types of errors
     let errorMessage = 'Error creating assignment. Please try again.'
-    if (error.message) {
+    
+    // Check for API response errors
+    if (error.response?.data) {
+      const errorData = error.response.data
+      
+      // Handle serializer validation errors
+      if (errorData.errors) {
+        const errorList = []
+        for (const [field, messages] of Object.entries(errorData.errors)) {
+          if (Array.isArray(messages)) {
+            errorList.push(`${field}: ${messages.join(', ')}`)
+          } else {
+            errorList.push(`${field}: ${messages}`)
+          }
+        }
+        errorMessage = errorList.join('\n')
+      } else if (errorData.message) {
+        errorMessage = errorData.message
+      } else if (errorData.error) {
+        errorMessage = errorData.error
+      }
+    } else if (error.message) {
       errorMessage = error.message
-    } else if (error.response?.data?.message) {
-      errorMessage = error.response.data.message
-    } else if (error.response?.data?.error) {
-      errorMessage = error.response.data.error
     }
     
     PopupService.error(errorMessage, 'Assignment Failed')
@@ -855,14 +914,17 @@ onMounted(async () => {
     showCreateForm.value = true
     
     if (slaId) {
-      form.value.object_id = slaId
-      form.value.sla_id = slaId
+      // Convert to integer for consistency
+      const slaIdInt = parseInt(slaId, 10)
+      form.value.object_id = slaIdInt
+      form.value.sla_id = slaIdInt
       // Find and set the selected SLA
-      const sla = contracts.value.find(c => c.sla_id == slaId)
+      const sla = contracts.value.find(c => c.sla_id == slaIdInt)
       if (sla) {
         selectedContract.value = sla
+        form.value.sla_id = sla.sla_id // Ensure we use the actual sla_id from the SLA object
       }
-      console.log('Auto-filled object_id from URL parameter:', slaId)
+      console.log('Auto-filled object_id and sla_id from URL parameter:', slaIdInt)
     }
     
     if (objectType) {

@@ -800,7 +800,7 @@
                   :min="criterion.min_score || 0"
                   :max="criterion.max_score"
                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  @input="validateScore(criterion.id, $event.target.value)"
+                  @change="validateScore(criterion.id, $event.target.value)"
                 />
                 <input
                   v-model.number="scores[criterion.id]"
@@ -808,7 +808,7 @@
                   :min="criterion.min_score || 0"
                   :max="criterion.max_score"
                   class="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  @input="validateScore(criterion.id, $event.target.value)"
+                  @blur="validateScore(criterion.id, $event.target.value)"
                 />
                 <div class="flex justify-between text-xs text-gray-500">
                   <span>Poor</span>
@@ -986,7 +986,7 @@ const isValid = computed(() => {
   // Check if all mandatory criteria have scores and comments
   const mandatoryCriteria = evaluationCriteria.value.filter(c => c.is_mandatory)
   const allMandatoryScored = mandatoryCriteria.every(c => 
-    scores.value[c.id] && scores.value[c.id] > 0
+    scores.value[c.id] !== undefined && scores.value[c.id] !== null && scores.value[c.id] >= 0
   )
   const allMandatoryComments = mandatoryCriteria.every(c => 
     comments.value[c.id] && comments.value[c.id].trim().length > 0
@@ -1044,11 +1044,24 @@ const validateScore = (criterionId, value) => {
   const criterion = evaluationCriteria.value.find(c => c.id === criterionId)
   if (!criterion) return
 
-  const numValue = Number(value)
-  const minScore = criterion.min_score || 0
+  const minScore = criterion.min_score !== undefined && criterion.min_score !== null ? criterion.min_score : 0
   const maxScore = criterion.max_score || 100
 
-  // Ensure score is within bounds
+  // Handle empty/NaN values - set to minimum score (0)
+  if (value === '' || value === null || value === undefined) {
+    scores.value[criterionId] = minScore
+    return
+  }
+
+  const numValue = Number(value)
+  
+  // If conversion results in NaN, set to minimum
+  if (isNaN(numValue)) {
+    scores.value[criterionId] = minScore
+    return
+  }
+
+  // Ensure score is within bounds (0 is valid)
   scores.value[criterionId] = Math.min(Math.max(numValue, minScore), maxScore)
 }
 
@@ -1350,26 +1363,50 @@ const loadProposalData = async () => {
       // PRIORITY 1: Extract from document_urls (contains real S3 URLs)
       if (proposalData.value?.document_urls) {
         console.log('✅ Found document_urls (REAL S3 URLs):', proposalData.value.document_urls)
+        console.log('✅ document_urls type:', typeof proposalData.value.document_urls)
+        console.log('✅ document_urls keys:', Object.keys(proposalData.value.document_urls || {}))
         
-        Object.entries(proposalData.value.document_urls).forEach(([docType, url]) => {
-          if (url && typeof url === 'string') {
-            const filename = url.split('/').pop() || docType
+        Object.entries(proposalData.value.document_urls).forEach(([docType, docInfo]) => {
+          console.log(`Processing document type: ${docType}, value:`, docInfo, 'type:', typeof docInfo)
+          
+          // Handle both string URLs and object structures
+          let url = null
+          let filename = null
+          let size = null
+          let contentType = null
+          
+          if (typeof docInfo === 'string') {
+            // Simple string URL
+            url = docInfo
+            filename = url.split('/').pop() || docType
+          } else if (docInfo && typeof docInfo === 'object') {
+            // Object with url, filename, etc.
+            url = docInfo.url || docInfo.download_url || docInfo.preview_url
+            filename = docInfo.filename || docInfo.file_name || docInfo.name || (url ? url.split('/').pop() : docType)
+            size = docInfo.size
+            contentType = docInfo.content_type || docInfo.file_type
+          }
+          
+          if (url) {
             const doc = {
-              id: `s3_${docType}`,
+              id: docInfo?.document_id || docInfo?.s3_file_id || `s3_${docType}`,
               name: docType.replace(/_/g, ' ').toUpperCase(),
               file_name: filename,
               type: docType,
-              file_type: getFileTypeFromName(filename),
+              file_type: contentType || getFileTypeFromName(filename),
               url: url,
               download_url: url,
               preview_url: url,
-              uploaded_at: proposalData.value.submitted_at,
+              size: size,
+              uploaded_at: docInfo?.upload_date || proposalData.value.submitted_at,
               category: 'S3 Documents',
               description: `${docType.replace(/_/g, ' ').toUpperCase()} - Real S3 URL`,
               source: 'document_urls'
             }
             console.log('✅ Adding S3 document:', doc)
             documents.value.push(doc)
+          } else {
+            console.warn(`⚠️ Skipping document type ${docType} - no URL found in:`, docInfo)
           }
         })
       }

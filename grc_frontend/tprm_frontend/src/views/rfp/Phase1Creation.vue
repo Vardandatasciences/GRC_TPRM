@@ -2980,11 +2980,10 @@ const saveSingleDocument = async (index: number) => {
 
     // Upload to S3 via backend API
     const authHeaders = getAuthHeaders()
+    // Remove Content-Type from headers when sending FormData - axios will set it automatically with boundary
+    const { 'Content-Type': _, ...headersWithoutContentType } = authHeaders
     const uploadResponse = await axios.post(`${API_BASE_URL}/upload-document/`, formData, {
-      headers: {
-        ...authHeaders,
-        'Content-Type': 'multipart/form-data',
-      },
+      headers: headersWithoutContentType,
       timeout: 60000 // 60 second timeout for large files
     })
 
@@ -3264,22 +3263,38 @@ const mergeDocumentsFromFiles = async (docs) => {
 
     // Create FormData with files in order
     const formData = new FormData()
-    docs.forEach(doc => {
+    let fileCount = 0
+    docs.forEach((doc, index) => {
       if (doc.file) {
-        formData.append('files', doc.file)
+        formData.append('files', doc.file, doc.file.name || `document_${index + 1}`)
+        fileCount++
+        console.log(`📎 Added file ${index + 1}: ${doc.file.name} (size: ${doc.file.size} bytes)`)
       }
     })
     
+    console.log(`📦 FormData created with ${fileCount} files`)
+    
     if (rfpId) {
       formData.append('rfp_id', rfpId)
+      console.log(`📋 RFP ID: ${rfpId}`)
     }
     formData.append('user_id', '1')
 
+    // Log FormData contents (for debugging)
+    console.log('📤 Sending merge request with FormData:')
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof File) {
+        console.log(`   ${key}: File(${value.name}, ${value.size} bytes)`)
+      } else {
+        console.log(`   ${key}: ${value}`)
+      }
+    }
+
+    const authHeaders = getAuthHeaders()
+    // Remove Content-Type from headers when sending FormData - axios will set it automatically with boundary
+    const { 'Content-Type': _, ...headersWithoutContentType } = authHeaders
     const mergeResponse = await axios.post(`${API_BASE_URL}/merge-documents/`, formData, {
-      headers: {
-        ...getAuthHeaders(),
-        'Content-Type': 'multipart/form-data',
-      },
+      headers: headersWithoutContentType,
       timeout: 120000
     })
 
@@ -3288,52 +3303,41 @@ const mergeDocumentsFromFiles = async (docs) => {
     if (mergeResponse.data && mergeResponse.data.success) {
       console.log('✅ Documents merged successfully from files:', mergeResponse.data)
       
-      // Fetch full document details from API
+      // Try to fetch full document details from API, but use merge response as fallback
+      let fileData = null
       try {
         const docResponse = await axios.get(`${API_BASE_URL}/s3-files/${mergeResponse.data.merged_document_id}/`, {
           headers: getAuthHeaders()
         })
         
-        const fileData = docResponse.data.s3_file || docResponse.data
-        console.log('✅ Fetched merged document details:', fileData)
-        
-        // Create merged document object and add to uploadedDocuments array
-        const mergedDoc = {
-          name: fileData.document_name || fileData.file_name || `Merged Document - ${formData.value.title || 'RFP'}`,
-          fileName: fileData.file_name || 'merged_document.pdf',
-          fileSize: fileData.file_size || 0,
-          fileType: fileData.file_type || 'pdf',
-          url: fileData.url || mergeResponse.data.merged_document_url,
-          uploaded: true,
-          s3Id: mergeResponse.data.merged_document_id,
-          file: null,
-          isMerged: true
+        if (docResponse.data && docResponse.data.success) {
+          fileData = docResponse.data.s3_file || docResponse.data
+          console.log('✅ Fetched merged document details:', fileData)
         }
-        
-        // Add merged document to the uploadedDocuments array
-        uploadedDocuments.value.push(mergedDoc)
-        console.log('✅ Merged document added to document list:', mergedDoc)
-        
-        // Clear the separate merged document display
-        mergedDocument.value = null
-        
       } catch (fetchError) {
-        console.error('❌ Error fetching merged document details:', fetchError)
-        // Fallback: create document object from merge response
-        const mergedDoc = {
-          name: mergeResponse.data.merged_document_name || `Merged Document - ${formData.value.title || 'RFP'}`,
-          fileName: mergeResponse.data.merged_document_name || 'merged_document.pdf',
-          fileSize: 0,
-          fileType: 'pdf',
-          url: mergeResponse.data.merged_document_url,
-          uploaded: true,
-          s3Id: mergeResponse.data.merged_document_id,
-          file: null,
-          isMerged: true
-        }
-        uploadedDocuments.value.push(mergedDoc)
-        mergedDocument.value = null
+        console.warn('⚠️ Could not fetch merged document details, using merge response data:', fetchError.response?.data || fetchError.message)
+        // Continue with merge response data as fallback
       }
+      
+      // Create merged document object from fetched data or merge response
+      const mergedDoc = {
+        name: fileData?.document_name || fileData?.file_name || mergeResponse.data.merged_document_name || `Merged Document - ${formData.value.title || 'RFP'}`,
+        fileName: fileData?.file_name || mergeResponse.data.merged_document_name || 'merged_document.pdf',
+        fileSize: fileData?.file_size || 0,
+        fileType: fileData?.file_type || 'pdf',
+        url: fileData?.url || mergeResponse.data.merged_document_url || '',
+        uploaded: true,
+        s3Id: mergeResponse.data.merged_document_id,
+        file: null,
+        isMerged: true
+      }
+      
+      // Add merged document to the uploadedDocuments array
+      uploadedDocuments.value.push(mergedDoc)
+      console.log('✅ Merged document added to document list:', mergedDoc)
+      
+      // Clear the separate merged document display
+      mergedDocument.value = null
       
       success('Documents Merged', `Successfully merged ${mergeResponse.data.document_count || docs.length} documents.`)
       return mergeResponse.data.merged_document_id
@@ -3493,11 +3497,10 @@ const saveAllDocuments = async () => {
 
         // Upload to S3 via backend API
         const authHeaders = getAuthHeaders()
+        // Remove Content-Type from headers when sending FormData - axios will set it automatically with boundary
+        const { 'Content-Type': _, ...headersWithoutContentType } = authHeaders
         const uploadResponse = await axios.post(`${API_BASE_URL}/upload-document/`, formData, {
-          headers: {
-            ...authHeaders,
-            'Content-Type': 'multipart/form-data',
-          },
+          headers: headersWithoutContentType,
           timeout: 60000
         })
 
@@ -4289,11 +4292,11 @@ const handleSaveDraft = async () => {
           uploadFormData.append('rfp_id', savedRfpId)
           uploadFormData.append('user_id', '1')
           
+          const authHeaders = getAuthHeaders()
+          // Remove Content-Type from headers when sending FormData - axios will set it automatically with boundary
+          const { 'Content-Type': _, ...headersWithoutContentType } = authHeaders
           const uploadResponse = await axios.post(`${API_BASE_URL}/upload-document/`, uploadFormData, {
-            headers: {
-              ...getAuthHeaders(),
-              'Content-Type': 'multipart/form-data',
-            },
+            headers: headersWithoutContentType,
             timeout: 60000
           })
           
@@ -4600,11 +4603,10 @@ const handleProceedToApprovalWorkflow = async () => {
           try {
             // Upload to S3 via backend API
             const authHeaders = getAuthHeaders()
+            // Remove Content-Type from headers when sending FormData - axios will set it automatically with boundary
+            const { 'Content-Type': _, ...headersWithoutContentType } = authHeaders
             const uploadResponse = await axios.post(`${API_BASE_URL}/upload-document/`, formData, {
-              headers: {
-                ...authHeaders,
-                'Content-Type': 'multipart/form-data',
-              },
+              headers: headersWithoutContentType,
               timeout: 60000 // 60 second timeout for large files
             })
             

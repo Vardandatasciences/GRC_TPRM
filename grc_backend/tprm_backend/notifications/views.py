@@ -178,8 +178,12 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
 @api_view(['GET'])
 @authentication_classes([UnifiedJWTAuthentication])
-@permission_classes_decorator([AllowAny])  # Temporarily allow all for testing
+@permission_classes_decorator([AllowAny])  # Allow access for stats endpoint
 def notification_stats(request):
+    """
+    Get notification statistics
+    Note: Uses AllowAny permission to allow access even if JWT doesn't have user_id
+    """
     """Function-based view for notification statistics"""
     try:
         # Get stats for the last 30 days

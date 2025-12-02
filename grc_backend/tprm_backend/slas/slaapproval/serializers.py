@@ -1,6 +1,10 @@
 from rest_framework import serializers
 from django.utils import timezone
+from django.core.exceptions import ObjectDoesNotExist
 from .models import SLAApproval
+
+# Import VendorSLA model - use relative import since we're in the same app
+from ..models import VendorSLA
 
 
 class SLAApprovalAssignmentSerializer(serializers.ModelSerializer):
@@ -101,13 +105,34 @@ class SLAApprovalCreateAssignmentSerializer(serializers.ModelSerializer):
     
     def validate_sla_id(self, value):
         """Validate that the sla_id exists"""
-        if value:
+        if value is None or value == '':
+            # Allow None or empty for optional fields, but sla_id is required for SLA approvals
+            raise serializers.ValidationError("sla_id is required")
+        
+        # Convert to integer if it's a string
+        if isinstance(value, str):
             try:
-                from slas.models import VendorSLA
-                VendorSLA.objects.get(sla_id=value)
-            except:
-                raise serializers.ValidationError(f"SLA with ID {value} not found")
-        return value
+                value = int(value)
+            except ValueError:
+                raise serializers.ValidationError(f"SLA ID must be a valid integer, got: {value}")
+        
+        # Ensure it's a positive integer
+        if not isinstance(value, int) or value <= 0:
+            raise serializers.ValidationError(f"SLA ID must be a positive integer, got: {value}")
+        
+        # Validate that the SLA exists
+        try:
+            VendorSLA.objects.get(sla_id=value)
+            # Return the integer value to ensure type consistency
+            return value
+        except ObjectDoesNotExist:
+            raise serializers.ValidationError(f"SLA with ID {value} not found")
+        except Exception as e:
+            # Log unexpected errors for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error validating sla_id {value}: {str(e)}", exc_info=True)
+            raise serializers.ValidationError(f"Error validating SLA ID {value}: {str(e)}")
     
     def validate_due_date(self, value):
         """Validate due date is not in the past"""
@@ -151,10 +176,14 @@ class SLAApprovalBulkCreateSerializer(serializers.Serializer):
         # Check if all SLAs exist
         for sla_id in value:
             try:
-                from slas.models import VendorSLA
                 VendorSLA.objects.get(sla_id=sla_id)
-            except:
+            except ObjectDoesNotExist:
                 raise serializers.ValidationError(f"SLA with ID {sla_id} not found")
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error validating sla_id {sla_id}: {str(e)}")
+                raise serializers.ValidationError(f"Error validating SLA ID {sla_id}: {str(e)}")
         
         return value
     

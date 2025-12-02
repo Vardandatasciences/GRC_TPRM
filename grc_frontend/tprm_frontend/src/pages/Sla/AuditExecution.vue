@@ -514,7 +514,8 @@ import {
   Play,
   Paperclip,
   Download,
-  Loader2
+  Loader2,
+  Trash2
 } from 'lucide-vue-next'
 import apiService from '@/services/api.js'
 import Card from '@/components/ui/card.vue'

@@ -6,6 +6,10 @@ from django.http import HttpResponse
 from django.views.decorators.cache import cache_control
 from django.views.generic import TemplateView
 
+# Import RFP views for direct URL patterns
+import tprm_backend.rfp.views as rfp_views
+import tprm_backend.rfp.views_rfp_responses as rfp_response_views
+
 # GRC Integration imports
 from grc.routes.Integrations.Bamboohr.bamboohr import (
     bamboohr_oauth, bamboohr_oauth_callback, bamboohr_stored_data,
@@ -182,6 +186,10 @@ urlpatterns = [
     path('api/tprm/rfp-approval/', include('tprm_backend.rfp_approval.urls')),
     path('api/tprm/rfp-risk-analysis/', include('tprm_backend.rfp_risk_analysis.urls')),
     
+    # RFP Approval URLs - Additional paths for compatibility
+    path('api/approval/', include('tprm_backend.rfp_approval.urls')),
+    path('api/rfp-approval/', include('tprm_backend.rfp_approval.urls')),
+    
     # TPRM Vendor Management APIs
     path('api/tprm/vendor-core/', include('tprm_backend.apps.vendor_core.urls')),
     path('api/tprm/vendor-auth/', include('tprm_backend.apps.vendor_auth.urls')),
@@ -194,6 +202,15 @@ urlpatterns = [
     
     # Frontend v1 compatibility routes
     path('api/v1/rfps/', include('tprm_backend.rfp.urls')),  # Frontend compatibility for /api/v1/rfps/
+    # RFP responses endpoints for /api/v1/ compatibility
+    path('api/v1/rfp-responses-detail/<int:response_id>/', rfp_response_views.get_rfp_response_by_id, name='get_rfp_response_by_id_v1'),
+    path('api/v1/rfp-responses-list/', rfp_response_views.get_rfp_responses, name='get_rfp_responses_v1'),
+    # Vendor invitations endpoints - direct paths without double prefix for /api/v1/vendor-invitations/
+    path('api/v1/vendor-invitations/stats/<int:rfp_id>/', rfp_views.get_invitation_stats, name='get_invitation_stats_v1'),
+    path('api/v1/vendor-invitations/rfp/<int:rfp_id>/', rfp_views.get_invitations_by_rfp, name='get_invitations_by_rfp_v1'),
+    path('api/v1/vendor-invitations/create/<int:rfp_id>/', rfp_views.create_vendor_invitations, name='create_vendor_invitations_v1'),
+    path('api/v1/vendor-invitations/send/<int:rfp_id>/', rfp_views.send_vendor_invitations, name='send_vendor_invitations_v1'),
+    path('api/v1/vendor-invitations/primary-contacts/', rfp_views.get_primary_contacts, name='get_primary_contacts_v1'),
     path('api/v1/vendor-dashboard/', include('tprm_backend.apps.vendor_dashboard.urls')),  # Frontend compatibility for /api/v1/vendor-dashboard/
 ]
 

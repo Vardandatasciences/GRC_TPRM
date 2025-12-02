@@ -206,7 +206,7 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # External Base URL for vendor invitations and public-facing URLs
-EXTERNAL_BASE_URL = env_config('EXTERNAL_BASE_URL', default='http://localhost:5173')
+EXTERNAL_BASE_URL = env_config('EXTERNAL_BASE_URL', default='http://localhost:3000')
 
 # Email Configuration
 EMAIL_BACKEND = env_config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')

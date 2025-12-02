@@ -42,7 +42,103 @@ from django.db import transaction
 
 # RBAC imports
 from tprm_backend.rbac.tprm_decorators import rbac_vendor_required
-from tprm_backend.apps.vendor_core.vendor_authentication import UnifiedJWTAuthentication, SimpleAuthenticatedPermission
+from tprm_backend.apps.vendor_core.vendor_authentication import JWTAuthentication, SimpleAuthenticatedPermission
+
+
+# Database connection helper - Use tprm_integration database for all vendor approval operations
+def get_db_connection():
+    """
+    Get the correct database connection for tprm_integration database.
+    Returns 'tprm' if available, otherwise falls back to 'default'.
+    """
+    if 'tprm' in connections.databases:
+        return connections['tprm']
+    return connections['default']
+
+
+
+def compute_exponent_normalized_weights(raw_values, target_sum=10.0, max_iterations=40):
+    """
+    Compute normalized weights from raw influence values using:
+        a^x + b^x + c^x + ... = target_sum
+
+    Returns a list of weights that:
+      - are all positive (when there is at least one positive raw value)
+      - sum to 1.0
+      - reflect the relative strengths of the raw values
+    """
+    try:
+        # Filter and sanitize raw values
+        values = []
+        for v in raw_values or []:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                fv = 0.0
+            # Only keep strictly positive influences
+            if fv > 0:
+                values.append(fv)
+
+        n = len(values)
+        if n == 0:
+            return []
+
+        # Edge case: single reviewer → full weight
+        if n == 1:
+            return [1.0]
+
+        # Binary search for exponent x in a reasonable range.
+        # In most realistic cases, influences are between 1 and 100.
+        # We search x in [0.01, 5.0], which is sufficient and numerically stable.
+        lo, hi = 0.01, 5.0
+
+        def sum_powers(x):
+            total = 0.0
+            for a in values:
+                if a <= 0:
+                    continue
+                total += a ** x
+            return total
+
+        for _ in range(max_iterations):
+            mid = (lo + hi) / 2.0
+            total = sum_powers(mid)
+
+            # If total is too large, decrease exponent; if too small, increase
+            if total > target_sum:
+                hi = mid
+            else:
+                lo = mid
+
+        x = (lo + hi) / 2.0
+
+        # Compute final weights; normalize to guarantee sum == 1
+        powered = []
+        for a in values:
+            if a <= 0:
+                powered.append(0.0)
+            else:
+                powered.append(a ** x)
+
+        total_powered = sum(powered)
+        if total_powered <= 0:
+            # Fallback to equal weights if numerical issues occur
+            equal_w = 1.0 / n
+            return [equal_w for _ in range(n)]
+
+        return [p / total_powered for p in powered]
+
+    except Exception as e:
+        # Never fail the overall flow due to weighting; fall back to equal weights
+        try:
+            n = len([v for v in (raw_values or []) if float(v) > 0])
+        except Exception:
+            n = len(raw_values) if raw_values is not None else 0
+        if n <= 0:
+            return []
+        equal_w = 1.0 / n
+        print(f"Warning - compute_exponent_normalized_weights fallback to equal weights: {str(e)}")
+        return [equal_w for _ in range(n)]
 
 
 
@@ -86,9 +182,9 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
             if temp_vendor.vendor_code:
 
-                with connections['tprm'].cursor() as cursor:
+                with get_db_connection().cursor() as cursor:
 
-                    cursor.execute("SELECT vendor_id FROM tprm_integration.vendors WHERE vendor_code = %s", [temp_vendor.vendor_code])
+                    cursor.execute("SELECT vendor_id FROM vendors WHERE vendor_code = %s", [temp_vendor.vendor_code])
 
                     existing_vendor = cursor.fetchone()
 
@@ -166,7 +262,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
             # Insert into main vendors table
 
-            with connections['tprm'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
 
                 # Build the INSERT query dynamically
 
@@ -248,7 +344,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
                             # Insert contact
 
-                            with connections['tprm'].cursor() as cursor:
+                            with get_db_connection().cursor() as cursor:
 
                                 contact_columns = list(contact_data.keys())
 
@@ -336,7 +432,7 @@ def migrate_vendor_from_temp_to_main(temp_vendor_id, user_id=None):
 
                             # Insert document
 
-                            with connections['tprm'].cursor() as cursor:
+                            with get_db_connection().cursor() as cursor:
 
                                 doc_columns = list(document_data.keys())
 
@@ -512,7 +608,7 @@ def create_approval_version(approval_id, version_type, version_label, json_paylo
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get the maximum version number to ensure proper incrementation
 
@@ -618,7 +714,7 @@ def create_approval_version(approval_id, version_type, version_label, json_paylo
 
             
             # CRITICAL: Commit the transaction to persist the version changes
-            connections['tprm'].commit()
+            get_db_connection().commit()
             
             print(f"✓ Version created and committed: {version_id} (v{next_version_number})")
             print(f"  - Approval ID: {approval_id}")
@@ -661,7 +757,7 @@ def check_sequential_approval_ready(approval_id, stage_order):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get workflow type
 
@@ -716,7 +812,7 @@ def check_sequential_approval_ready(approval_id, stage_order):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_my_approvals(request):
@@ -757,7 +853,7 @@ def get_my_approvals(request):
 
 
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             if include_statuses:
 
@@ -974,7 +1070,7 @@ def get_my_approvals(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_stage_reviewers(request):
@@ -989,7 +1085,7 @@ def get_stage_reviewers(request):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute(
 
@@ -1038,7 +1134,7 @@ def get_stage_reviewers(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_user_assigned_stages(request, user_id):
@@ -1047,7 +1143,7 @@ def get_user_assigned_stages(request, user_id):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute(
 
@@ -1138,7 +1234,7 @@ def get_user_assigned_stages(request, user_id):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('approve_reject_vendor')
 def post_stage_action(request, stage_id):
@@ -1163,7 +1259,7 @@ def post_stage_action(request, stage_id):
 
 
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get current stage + related info + workflow type
 
@@ -1671,7 +1767,7 @@ def post_stage_action(request, stage_id):
 
 
 
-        connections['tprm'].commit()
+        get_db_connection().commit()
 
         return Response({'message': 'Action processed successfully'}, status=status.HTTP_200_OK)
 
@@ -1692,7 +1788,7 @@ def post_stage_action(request, stage_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_questionnaire_questions(request, questionnaire_id: int):
@@ -1707,7 +1803,7 @@ def get_questionnaire_questions(request, questionnaire_id: int):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute(
 
@@ -1776,7 +1872,7 @@ def get_questionnaire_questions(request, questionnaire_id: int):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_approvals_by_requester(request):
@@ -1823,7 +1919,7 @@ def get_approvals_by_requester(request):
 
 
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             sql = (
 
@@ -1942,7 +2038,7 @@ def get_approvals_by_requester(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_users(request):
@@ -1951,13 +2047,13 @@ def get_users(request):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("""
 
                 SELECT UserId, UserName, Email, CreatedAt 
 
-                FROM tprm_integration.users 
+                FROM users 
 
                 ORDER BY UserName
 
@@ -2066,7 +2162,7 @@ def get_users(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_request_with_stages(request, approval_id: str):
@@ -2075,7 +2171,7 @@ def get_request_with_stages(request, approval_id: str):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get the approval request with workflow info
 
@@ -2282,7 +2378,7 @@ def get_request_with_stages(request, approval_id: str):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('approve_reject_vendor')
 def requester_final_decision(request, approval_id: str):
@@ -2319,7 +2415,7 @@ def requester_final_decision(request, approval_id: str):
 
 
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("SELECT workflow_id, overall_status, request_data FROM approval_requests WHERE approval_id=%s", [approval_id])
 
@@ -2535,7 +2631,7 @@ def requester_final_decision(request, approval_id: str):
 
             
 
-            cursor.connection.commit()
+            get_db_connection().commit()
 
 
 
@@ -2573,7 +2669,7 @@ def requester_final_decision(request, approval_id: str):
 
                                 # Get all stages and calculate average scores
 
-                                with connections['tprm'].cursor() as score_cursor:
+                                with get_db_connection().cursor() as score_cursor:
 
                                     score_cursor.execute("""
 
@@ -2929,7 +3025,7 @@ def requester_final_decision(request, approval_id: str):
 
                         # Import and trigger the threading-based async risk generation
 
-                        from risk_analysis_vendor.services import RiskAnalysisService
+                        from tprm_backend.risk_analysis_vendor.services import RiskAnalysisService
 
                         
 
@@ -3002,7 +3098,7 @@ def requester_final_decision(request, approval_id: str):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('approve_reject_vendor')
 def admin_handle_rejection(request, approval_id):
@@ -3049,7 +3145,7 @@ def admin_handle_rejection(request, approval_id):
 
 
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get workflow details
 
@@ -3396,7 +3492,7 @@ def admin_handle_rejection(request, approval_id):
 
 
 
-        connections['tprm'].commit()
+        get_db_connection().commit()
 
         return Response({'message': message}, status=status.HTTP_200_OK)
 
@@ -3419,7 +3515,7 @@ def admin_handle_rejection(request, approval_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_request_versions(request, approval_id):
@@ -3428,7 +3524,7 @@ def get_request_versions(request, approval_id):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("""
 
@@ -3508,7 +3604,7 @@ def get_request_versions(request, approval_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def debug_version_data(request, approval_id):
@@ -3517,7 +3613,7 @@ def debug_version_data(request, approval_id):
     Use this to verify version creation and data integrity.
     """
     try:
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
             # Get all versions with full details
             cursor.execute("""
                 SELECT 
@@ -3619,7 +3715,7 @@ def debug_version_data(request, approval_id):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('create_vendor')
 def create_workflow(request):
@@ -3656,7 +3752,7 @@ def create_workflow(request):
 
         try:
 
-            with connections['tprm'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -3808,7 +3904,7 @@ def create_workflow(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connections['tprm'].commit()
+                get_db_connection().commit()
 
                 
 
@@ -3859,7 +3955,7 @@ def create_workflow(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_workflows(request):
@@ -3868,7 +3964,7 @@ def get_workflows(request):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("""
 
@@ -3909,7 +4005,7 @@ def get_workflows(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_workflow_stages(request, workflow_id):
@@ -3918,7 +4014,7 @@ def get_workflow_stages(request, workflow_id):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("""
 
@@ -3963,7 +4059,7 @@ def get_workflow_stages(request, workflow_id):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('SubmitVendorForApproval')
 def create_workflow_request(request):
@@ -4000,7 +4096,7 @@ def create_workflow_request(request):
 
         try:
 
-            with connections['tprm'].cursor() as cursor:
+            with get_db_connection().cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -4156,7 +4252,7 @@ def create_workflow_request(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connections['tprm'].commit()
+                get_db_connection().commit()
 
                 
 
@@ -4205,7 +4301,7 @@ def create_workflow_request(request):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('SubmitVendorForApproval')
 def create_comprehensive_workflow(request):
@@ -4262,7 +4358,11 @@ def create_comprehensive_workflow(request):
 
         try:
 
-            with connections['tprm'].cursor() as cursor:
+            # Use 'tprm' database connection for tprm_integration database
+            # Try 'tprm' first, fall back to 'default' if not available
+            db_connection = 'tprm' if 'tprm' in connections.databases else 'default'
+            
+            with connections[db_connection].cursor() as cursor:
 
                 # Temporarily disable foreign key checks
 
@@ -4666,7 +4766,7 @@ def create_comprehensive_workflow(request):
                                         
                                         # Use the helper function to ensure lifecycle stage exists
                                         # First commit the current transaction to avoid conflicts
-                                        connections['tprm'].commit()
+                                        connections[db_connection].commit()
                                         
                                         # Ensure lifecycle stage exists (for tracking only, not for approval_stages)
                                         from django.db import transaction
@@ -4720,13 +4820,13 @@ def create_comprehensive_workflow(request):
 
                         INSERT INTO approval_stages 
 
-                        (stage_id, approval_id, stage_order, stage_name, stage_description, 
+                        (stage_id, approval_id, stage_order, weightage, stage_name, stage_description, 
 
                          assigned_user_id, assigned_user_name, assigned_user_role, department, 
 
                          stage_type, stage_status, deadline_date, started_at, response_data, is_mandatory, created_at, updated_at) 
 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 
                     """, [
 
@@ -4735,6 +4835,8 @@ def create_comprehensive_workflow(request):
                         approval_id,
 
                         stage_config.get('stage_order', 1),
+
+                        stage_config.get('weightage'),
 
                         stage_config.get('stage_name', ''),
 
@@ -4820,7 +4922,7 @@ def create_comprehensive_workflow(request):
 
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
-                connections['tprm'].commit()
+                connections[db_connection].commit()
 
                 
 
@@ -4990,7 +5092,7 @@ def create_comprehensive_workflow(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_active_questionnaires(request):
@@ -4999,7 +5101,7 @@ def get_active_questionnaires(request):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # First check if questionnaires table exists and has data
 
@@ -5094,7 +5196,7 @@ def get_active_questionnaires(request):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('create_vendor')
 def add_dummy_users(request):
@@ -5103,7 +5205,7 @@ def add_dummy_users(request):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Check if users already exist
 
@@ -5163,7 +5265,7 @@ def add_dummy_users(request):
 
             
 
-            connections['tprm'].commit()
+            get_db_connection().commit()
 
             
 
@@ -5194,7 +5296,7 @@ def add_dummy_users(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_vendors(request):
@@ -5296,7 +5398,7 @@ def get_vendors(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_vendor_detail(request, vendor_id):
@@ -5414,7 +5516,7 @@ def get_vendor_detail(request, vendor_id):
 # Dashboard API Endpoints
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def dashboard_stats(request):
@@ -5425,7 +5527,7 @@ def dashboard_stats(request):
 
         from django.db import connections
 
-        cursor = connections['tprm'].cursor()
+        cursor = get_db_connection().cursor()
 
         
 
@@ -5589,7 +5691,7 @@ def dashboard_stats(request):
 
         # Fallback to basic counts filtered by business_object_type = 'Vendor'
 
-        cursor = connections['tprm'].cursor()
+        cursor = get_db_connection().cursor()
 
         cursor.execute("""
 
@@ -5654,7 +5756,7 @@ def dashboard_stats(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def recent_requests(request):
@@ -5663,7 +5765,7 @@ def recent_requests(request):
 
     try:
 
-        cursor = connections['tprm'].cursor()
+        cursor = get_db_connection().cursor()
 
         
 
@@ -5764,7 +5866,7 @@ def recent_requests(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def user_tasks(request, user_id):
@@ -5773,7 +5875,7 @@ def user_tasks(request, user_id):
 
     try:
 
-        cursor = connections['tprm'].cursor()
+        cursor = get_db_connection().cursor()
 
         
 
@@ -5912,7 +6014,7 @@ def user_tasks(request, user_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def user_requests(request, user_id):
@@ -5921,7 +6023,7 @@ def user_requests(request, user_id):
 
     try:
 
-        cursor = connections['tprm'].cursor()
+        cursor = get_db_connection().cursor()
 
         
 
@@ -6024,7 +6126,7 @@ def user_requests(request, user_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_vendor_risks(request, vendor_id):
@@ -6338,7 +6440,7 @@ def get_vendor_risks(request, vendor_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_submitted_questionnaire_assignments(request):
@@ -6534,7 +6636,7 @@ def get_submitted_questionnaire_assignments(request):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('ReviewApproveResponses')
 def save_reviewer_scores(request):
@@ -6579,15 +6681,19 @@ def save_reviewer_scores(request):
 
         
 
-        # Check workflow type to determine where to save scores
-
+        # Check workflow type and approval_type to determine where to save scores
+        
         workflow_type = None
-
+        
         stage_id = None
+
+        approval_id = None
+
+        approval_type = None
 
         
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             cursor.execute("""
 
@@ -6634,8 +6740,39 @@ def save_reviewer_scores(request):
                     stage_id = stage_result[0]
 
         
+        # If we found an approval_id, attempt to detect approval_type from approval_requests.request_data
+        if approval_id:
+            try:
+                with get_db_connection().cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT request_data
+                        FROM approval_requests
+                        WHERE approval_id = %s
+                        """,
+                        [approval_id],
+                    )
+                    approval_row = cursor.fetchone()
 
-        print(f"Debug - save_reviewer_scores: workflow_type={workflow_type}, stage_id={stage_id}")
+                    if approval_row and approval_row[0]:
+                        try:
+                            if isinstance(approval_row[0], str):
+                                approval_request_data = json.loads(approval_row[0])
+                            else:
+                                approval_request_data = approval_row[0]
+                        except Exception:
+                            approval_request_data = {}
+
+                        rd = approval_request_data.get("request_data", approval_request_data) or {}
+                        raw_approval_type = rd.get("approval_type") or rd.get("request_data", {}).get("approval_type")
+                        if raw_approval_type:
+                            approval_type = str(raw_approval_type)
+            except Exception as e:
+                print(f"Warning - save_reviewer_scores: unable to extract approval_type for approval_id={approval_id}: {str(e)}")
+
+        approval_type_normalized = approval_type.lower().replace(" ", "_") if approval_type else ""
+
+        print(f"Debug - save_reviewer_scores: workflow_type={workflow_type}, approval_type={approval_type_normalized}, stage_id={stage_id}")
 
         
 
@@ -6649,11 +6786,10 @@ def save_reviewer_scores(request):
 
             
 
-            # For MULTI_PERSON workflows, save scores ONLY in stage response_data
-
-            # For other workflows (MULTI_LEVEL), save to questionnaire_response_submissions
-
-            if workflow_type == 'MULTI_PERSON' and stage_id:
+            # For MULTI_PERSON + response_approval workflows, save scores ONLY in stage response_data
+            # For other workflows (including MULTI_LEVEL), save to questionnaire_response_submissions
+            
+            if workflow_type == 'MULTI_PERSON' and approval_type_normalized == 'response_approval' and stage_id:
 
                 print(f"Debug - MULTI_PERSON workflow: Saving scores to stage response_data only (stage_id={stage_id})")
 
@@ -6661,7 +6797,7 @@ def save_reviewer_scores(request):
 
                 # Save scores to the stage's response_data field
 
-                with connections['tprm'].cursor() as cursor:
+                with get_db_connection().cursor() as cursor:
 
                     # Get current response_data
 
@@ -6755,7 +6891,7 @@ def save_reviewer_scores(request):
 
                     
 
-                    connections['tprm'].commit()
+                    get_db_connection().commit()
 
                     
 
@@ -6851,7 +6987,7 @@ def save_reviewer_scores(request):
 
             try:
 
-                with connections['tprm'].cursor() as cursor:
+                with get_db_connection().cursor() as cursor:
 
                     # Get the approval_id associated with this assignment
 
@@ -7065,7 +7201,7 @@ def save_reviewer_scores(request):
 
                         
 
-                        connections['tprm'].commit()
+                        get_db_connection().commit()
 
                         
 
@@ -7114,7 +7250,7 @@ def save_reviewer_scores(request):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('update_vendor')
 def save_stage_draft(request):
@@ -7143,7 +7279,7 @@ def save_stage_draft(request):
 
         
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Check if stage exists and is assigned to user
 
@@ -7284,7 +7420,7 @@ def save_stage_draft(request):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def load_stage_draft(request, stage_id):
@@ -7297,7 +7433,7 @@ def load_stage_draft(request, stage_id):
 
         
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get the stage with draft data
 
@@ -7384,7 +7520,7 @@ def load_stage_draft(request, stage_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_parallel_approval_scoring_data(request, approval_id):
@@ -7393,7 +7529,7 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
     try:
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get the approval request and verify it's a parallel response approval
 
@@ -7481,21 +7617,38 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
             
 
-            # Get all stages for this approval
+            # Get all stages for this approval (including raw influence weightage per reviewer)
+            # Join with users table to get proper user names in case assigned_user_name is NULL
 
             cursor.execute("""
 
-                SELECT stage_id, stage_name, assigned_user_id, assigned_user_name, 
-
-                       stage_status, response_data, completed_at
-
-                FROM approval_stages
-
-                WHERE approval_id = %s
-
-                ORDER BY stage_order
+                SELECT 
+                    ast.stage_id, 
+                    ast.stage_name, 
+                    ast.assigned_user_id, 
+                    COALESCE(
+                        NULLIF(TRIM(ast.assigned_user_name), ''), 
+                        u.UserName, 
+                        CONCAT(u.FirstName, ' ', u.LastName),
+                        u.FirstName,
+                        CAST(ast.assigned_user_id AS CHAR),
+                        'Unknown Reviewer'
+                    ) as assigned_user_name, 
+                    ast.stage_status, 
+                    ast.response_data, 
+                    ast.completed_at, 
+                    ast.weightage
+                
+                FROM approval_stages ast
+                LEFT JOIN users u ON ast.assigned_user_id = u.UserId
+                
+                WHERE ast.approval_id = %s
+                
+                ORDER BY ast.stage_order
 
             """, [approval_id])
+            
+            print(f"Debug - Fetching stages for approval_id: {approval_id}")
 
             
 
@@ -7507,9 +7660,11 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
             for stage_row in cursor.fetchall():
 
-                stage_id, stage_name, user_id, user_name, stage_status, response_data, completed_at = stage_row
+                stage_id, stage_name, user_id, user_name, stage_status, response_data, completed_at, weightage = stage_row
 
                 
+                # Debug logging
+                print(f"Debug - Stage: {stage_id}, UserID: {user_id}, UserName: '{user_name}', Status: {stage_status}, Weightage: {weightage}")
 
                 stage_data = {
 
@@ -7519,9 +7674,12 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                     'assigned_user_id': user_id,
 
-                    'assigned_user_name': user_name,
+                    'assigned_user_name': user_name if user_name and user_name.strip() else f'User {user_id}',
 
                     'stage_status': stage_status,
+
+                    # Raw influence value entered as "weightage" for this reviewer (may be null)
+                    'weightage': float(weightage) if weightage is not None else None,
 
                     'completed_at': completed_at.isoformat() if completed_at else None,
 
@@ -7730,6 +7888,9 @@ def get_parallel_approval_scoring_data(request, approval_id):
                 comprehensive_reviewer_scores = []
 
                 
+                # Debug: Log stages info
+                print(f"Debug - Building reviewer scores for question {response.question.question_id}")
+                print(f"Debug - Available stages: {[(s['stage_id'], s['assigned_user_name'], s.get('weightage')) for s in stages]}")
 
                 for stage in stages:
 
@@ -7748,14 +7909,16 @@ def get_parallel_approval_scoring_data(request, approval_id):
                     if submitted_score:
 
                         # Reviewer has submitted - use their actual score
-
-                        comprehensive_reviewer_scores.append({
+                        
+                        reviewer_entry = {
 
                             'stage_id': stage['stage_id'],
 
                             'reviewer': stage['assigned_user_name'],
 
                             'reviewer_id': stage['assigned_user_id'],
+
+                            'weightage': stage.get('weightage'),  # Include raw influence weight
 
                             'score': submitted_score['score'],
 
@@ -7765,7 +7928,11 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                             'completed_at': stage['completed_at']
 
-                        })
+                        }
+                        
+                        print(f"Debug - Added reviewer (submitted): {reviewer_entry['reviewer']} (ID: {reviewer_entry['reviewer_id']}) with score {reviewer_entry['score']}")
+                        
+                        comprehensive_reviewer_scores.append(reviewer_entry)
 
                     else:
 
@@ -7779,6 +7946,8 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                             'reviewer_id': stage['assigned_user_id'],
 
+                            'weightage': stage.get('weightage'),  # Include raw influence weight
+
                             'score': None,
 
                             'comment': '',
@@ -7791,7 +7960,7 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                 
 
-                # Calculate average score from submitted scores only - simplified approach
+                # Calculate weighted score using exponent-based normalization from weightage column
 
                 submitted_scores_only = [score for score in comprehensive_reviewer_scores if score['score'] is not None]
 
@@ -7807,9 +7976,13 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                     
 
-                    # Extract valid scores and log for debugging
+                    # Extract valid scores AND their raw influence weights (weightage)
 
                     valid_scores = []
+
+                    raw_influences = []
+
+                    
 
                     for score_entry in submitted_scores_only:
 
@@ -7819,6 +7992,16 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                             valid_scores.append(score_val)
 
+                            
+
+                            # Get the raw influence value (weightage) for this reviewer
+
+                            stage_weight = score_entry.get('weightage')
+
+                            raw_influences.append(stage_weight)
+
+                            
+
                         except (ValueError, TypeError):
 
                             continue
@@ -7827,29 +8010,51 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                     if valid_scores:
 
-                        raw_average = sum(valid_scores) / len(valid_scores)
+                        # Compute normalized weights using exponent-based formula: a^x + b^x + c^x = 10
+
+                        weights = compute_exponent_normalized_weights(raw_influences)
+
+                        
+
+                        # Fallback to equal weights if computation fails
+
+                        if not weights or len(weights) != len(valid_scores):
+
+                            equal_w = 1.0 / len(valid_scores)
+
+                            weights = [equal_w for _ in valid_scores]
+
+                        
+
+                        # Calculate weighted final score
+
+                        weighted_score = sum(s * w for s, w in zip(valid_scores, weights))
 
                         
 
                         # Normalize to percentage scale (0-100)
 
-                        average_score = (raw_average / max_score_for_question) * 100
+                        average_score = (weighted_score / max_score_for_question) * 100 if max_score_for_question > 0 else 0
 
-                        average_score = min(max(average_score, 0), 100.0)  # Ensure between 0 and 100
+                        average_score = min(max(average_score, 0), 100.0)
 
                         
 
                         # Debug logging to see what's happening
 
-                        print(f"Question {response.question.question_id} calculation:")
+                        print(f"Question {response.question.question_id} calculation (exponent-weighted):")
 
                         print(f"  Weight: {scoring_weight}, Max Score: {max_score_for_question}")
 
+                        print(f"  Raw influences (weightage): {raw_influences}")
+
                         print(f"  Individual scores: {valid_scores}")
 
-                        print(f"  Raw average: {raw_average}")
+                        print(f"  Normalized weights (%): {[round(w*100.0, 2) for w in weights]}")
 
-                        print(f"  Percentage: {average_score:.1f}%")
+                        print(f"  Weighted score: {weighted_score:.2f}")
+
+                        print(f"  Percentage (final): {average_score:.1f}%")
 
                 
 
@@ -7898,6 +8103,59 @@ def get_parallel_approval_scoring_data(request, approval_id):
             questions_with_scores = len([q for q in questions_and_responses if q['reviewer_scores']])
 
             
+            
+            # Calculate a preview overall score from the weighted average_scores
+            # This shows the assignee what the score would be if they used the calculated weighted scores
+            
+            preview_overall_score = 0.0
+            
+            if questions_and_responses:
+                
+                total_weighted_score = 0.0
+                
+                total_weighted_max = 0.0
+                
+                
+                
+                for qr in questions_and_responses:
+                    
+                    scoring_weight = qr['scoring_weight']
+                    
+                    max_score_for_question = scoring_weight * 10
+                    
+                    average_score_percentage = qr.get('average_score', 0)  # This is 0-100 percentage
+                    
+                    
+                    
+                    # Convert percentage back to actual score
+                    
+                    actual_score = (average_score_percentage / 100.0) * max_score_for_question
+                    
+                    
+                    
+                    total_weighted_score += actual_score
+                    
+                    total_weighted_max += max_score_for_question
+                
+                
+                
+                if total_weighted_max > 0:
+                    
+                    preview_overall_score = (total_weighted_score / total_weighted_max) * 100
+                    
+                    preview_overall_score = min(max(preview_overall_score, 0), 100.0)
+                
+                
+                
+                print(f"Debug - Preview overall score calculated: {preview_overall_score:.2f}%")
+            
+            
+            
+            # Use preview score if the assignment overall_score is 0 or None
+            
+            display_overall_score = assignment.overall_score if assignment.overall_score else preview_overall_score
+
+            
 
             return Response({
 
@@ -7919,7 +8177,9 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
                     'questionnaire_type': assignment.questionnaire.questionnaire_type,
 
-                    'overall_score': float(assignment.overall_score) if assignment.overall_score else None,
+                    'overall_score': float(display_overall_score) if display_overall_score else 0.0,
+                    
+                    'preview_score': float(preview_overall_score) if preview_overall_score else 0.0,
 
                     'status': assignment.status
 
@@ -7970,7 +8230,7 @@ def get_parallel_approval_scoring_data(request, approval_id):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('update_vendor')
 def save_final_assignee_scores(request):
@@ -8035,7 +8295,7 @@ def save_final_assignee_scores(request):
 
             workflow_type = None
 
-            with connections['tprm'].cursor() as wf_cursor:
+            with get_db_connection().cursor() as wf_cursor:
 
                 wf_cursor.execute("""
 
@@ -8069,7 +8329,7 @@ def save_final_assignee_scores(request):
 
             
 
-            with connections['tprm'].cursor() as avg_cursor:
+            with get_db_connection().cursor() as avg_cursor:
 
                 # Get all approved stages for this assignment
 
@@ -8277,73 +8537,72 @@ def save_final_assignee_scores(request):
 
             
 
-            # For MULTI_PERSON workflows: Only write to questionnaire_response_submissions when decision is APPROVE
+            # ALWAYS write the weighted scores to questionnaire_response_submissions
+            # This ensures question-wise scores are persisted in the database for all workflows
 
-            # For other workflows: Always write to questionnaire_response_submissions
-
-            should_write_to_db = (workflow_type != 'MULTI_PERSON') or (assignee_decision == 'APPROVE')
-
-            
-
-            if should_write_to_db:
-
-                print(f"Debug - Writing scores to questionnaire_response_submissions (workflow={workflow_type}, decision={assignee_decision})")
-
-                
-
-                # Update database with the scores
-
-                for question_id_str, score_info in scores_to_use.items():
-
-                    try:
-
-                        response = QuestionnaireResponseSubmissions.objects.get(
-
-                            assignment=assignment,
-
-                            question_id=int(question_id_str)
-
-                        )
-
-                        
-
-                        response.score = score_info['score']
-
-                        response.reviewer_comment = score_info['comment']
-
-                        response.save()
-
-                        print(f"Debug - Updated DB Q{question_id_str}: score={response.score}, comment={response.reviewer_comment}")
-
-                        
-
-                    except QuestionnaireResponseSubmissions.DoesNotExist:
-
-                        print(f"Debug - Response not found for question {question_id_str}")
-
-                        continue
-
-                    except Exception as e:
-
-                        print(f"Debug - Error updating response for question {question_id_str}: {str(e)}")
-
-                        continue
-
-            else:
-
-                print(f"Debug - NOT writing scores to questionnaire_response_submissions (workflow={workflow_type}, decision={assignee_decision})")
-
-                print(f"Debug - Scores remain in stage response_data only until APPROVE decision")
+            should_write_to_db = True  # Always save question-wise scores
 
             
 
-            # FOURTH: Calculate overall score
+            # Write the weighted/final scores to questionnaire_response_submissions
 
-            # For MULTI_PERSON with APPROVE: calculate from database (scores were written)
+            print(f"Debug - Writing weighted question scores to questionnaire_response_submissions (workflow={workflow_type}, decision={assignee_decision})")
 
-            # For MULTI_PERSON without APPROVE: calculate from scores_to_use (scores in stage response_data)
+            
 
-            # For other workflows: calculate from database
+            # Update database with the final weighted scores
+
+            for question_id_str, score_info in scores_to_use.items():
+
+                try:
+
+                    response = QuestionnaireResponseSubmissions.objects.get(
+
+                        assignment=assignment,
+
+                        question_id=int(question_id_str)
+
+                    )
+
+                    
+
+                    # Save the weighted/final score for this question
+
+                    response.score = score_info['score']
+
+                    
+
+                    # Save the assignee's final comment (or combined reviewer comments)
+
+                    response.reviewer_comment = score_info['comment']
+
+                    
+
+                    response.save()
+
+                    print(f"Debug - Saved weighted score to DB: Q{question_id_str} = {response.score}")
+
+                    
+
+                except QuestionnaireResponseSubmissions.DoesNotExist:
+
+                    print(f"Warning - Response not found for question {question_id_str} in assignment {assignment_id}")
+
+                    continue
+
+                except Exception as e:
+
+                    print(f"Error - Failed to save score for question {question_id_str}: {str(e)}")
+
+                    continue
+
+            
+
+            # FOURTH: Calculate overall score from the database
+
+            # Since we always write scores to questionnaire_response_submissions now, 
+
+            # we can always calculate from the database
 
             total_weighted_score = 0
 
@@ -8351,99 +8610,49 @@ def save_final_assignee_scores(request):
 
             
 
-            if should_write_to_db:
+            # Scores are in database - fetch and calculate
 
-                # Scores are in database - fetch and calculate
+            print(f"Debug - Calculating overall score from database")
 
-                print(f"Debug - Calculating overall score from database")
+            all_responses = QuestionnaireResponseSubmissions.objects.filter(
 
-                all_responses = QuestionnaireResponseSubmissions.objects.filter(
+                assignment=assignment
 
-                    assignment=assignment
+            ).select_related('question')
 
-                ).select_related('question')
+            
 
-                
+            for response in all_responses:
 
-                for response in all_responses:
+                weight = float(response.question.scoring_weight) if response.question.scoring_weight else 1.0
 
-                    weight = float(response.question.scoring_weight) if response.question.scoring_weight else 1.0
-
-                    max_score = weight * 10
-
-                    
-
-                    # Use the score from database (which should now be updated)
-
-                    if response.score is not None:
-
-                        actual_score = float(response.score)
-
-                        total_weighted_score += actual_score
-
-                        total_weighted_max += max_score
-
-                        
-
-                        # Debug logging
-
-                        print(f"Score calculation - Q{response.question.question_id}: {actual_score}/{max_score} (weight: {weight})")
-
-                    else:
-
-                        # If score is still None, add to max but not to total
-
-                        total_weighted_max += max_score
-
-                        print(f"Score calculation - Q{response.question.question_id}: No score found, adding to max only")
-
-            else:
-
-                # Scores are NOT in database - calculate from scores_to_use
-
-                print(f"Debug - Calculating overall score from scores_to_use (stage response_data)")
-
-                all_responses = QuestionnaireResponseSubmissions.objects.filter(
-
-                    assignment=assignment
-
-                ).select_related('question')
+                max_score = weight * 10
 
                 
 
-                for response in all_responses:
+                # Use the weighted score from database (which was just updated)
 
-                    weight = float(response.question.scoring_weight) if response.question.scoring_weight else 1.0
+                if response.score is not None:
 
-                    max_score = weight * 10
+                    actual_score = float(response.score)
 
-                    question_id_str = str(response.question.question_id)
+                    total_weighted_score += actual_score
+
+                    total_weighted_max += max_score
 
                     
 
-                    # Use score from scores_to_use (calculated from stage response_data)
+                    # Debug logging
 
-                    if question_id_str in scores_to_use and scores_to_use[question_id_str]['score'] is not None:
+                    print(f"Score calculation - Q{response.question.question_id}: {actual_score}/{max_score} (weight: {weight})")
 
-                        actual_score = float(scores_to_use[question_id_str]['score'])
+                else:
 
-                        total_weighted_score += actual_score
+                    # If score is still None, add to max but not to total
 
-                        total_weighted_max += max_score
+                    total_weighted_max += max_score
 
-                        
-
-                        # Debug logging
-
-                        print(f"Score calculation - Q{question_id_str}: {actual_score}/{max_score} (weight: {weight}) [from stage response_data]")
-
-                    else:
-
-                        # If score not found, add to max but not to total
-
-                        total_weighted_max += max_score
-
-                        print(f"Score calculation - Q{question_id_str}: No score found, adding to max only")
+                    print(f"Score calculation - Q{response.question.question_id}: No score found, adding to max only")
 
             
 
@@ -8546,7 +8755,7 @@ def save_final_assignee_scores(request):
 
             try:
 
-                with connections['tprm'].cursor() as cursor:
+                with get_db_connection().cursor() as cursor:
 
                     # Get the approval_id associated with this assignment
 
@@ -8800,7 +9009,7 @@ def save_final_assignee_scores(request):
 
                         
 
-                        connections['tprm'].commit()
+                        get_db_connection().commit()
 
                         
 
@@ -8840,7 +9049,7 @@ def save_final_assignee_scores(request):
                             
                             # Try to get actual user name from database
                             try:
-                                with connections['tprm'].cursor() as user_cursor:
+                                with get_db_connection().cursor() as user_cursor:
                                     user_cursor.execute("""
                                         SELECT username FROM users_user WHERE id = %s
                                     """, [assignee_id])
@@ -8944,7 +9153,7 @@ def save_final_assignee_scores(request):
 
 
 @api_view(['POST'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('update_vendor')
 def update_question_scores_in_json(request):
@@ -8971,7 +9180,7 @@ def update_question_scores_in_json(request):
 
         
 
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
 
             # Get the approval_id associated with this assignment
 
@@ -9193,7 +9402,7 @@ def update_question_scores_in_json(request):
 
                 
 
-                connections['tprm'].commit()
+                get_db_connection().commit()
 
                 
 
@@ -9527,7 +9736,7 @@ def _end_questionnaire_approval_start_questionnaire_response(vendor_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def test_lifecycle_stage_3(request, vendor_id):
@@ -9576,61 +9785,106 @@ def test_lifecycle_stage_3(request, vendor_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def check_risk_generation_status(request, approval_id):
     """Check the status of risk generation for a given approval ID"""
     try:
-        from risk_analysis_vendor.models import Risk
+        from tprm_backend.risk_analysis_vendor.models import Risk
+        import json
         
-        # Check if risks have been generated for this approval
-        risks = Risk.objects.filter(
-            source_type='vendor_management',
-            source_approval_id=approval_id
-        )
-        
-        risk_count = risks.count()
-        
-        if risk_count > 0:
-            return Response({
-                'status': 'completed',
-                'risk_count': risk_count,
-                'message': f'Risk generation completed. {risk_count} risks identified.'
-            }, status=status.HTTP_200_OK)
-        else:
-            # Check if the approval exists and is approved
-            with connections['tprm'].cursor() as cursor:
-                cursor.execute("""
-                    SELECT overall_status, request_data 
-                    FROM approval_requests 
-                    WHERE approval_id = %s
-                """, [approval_id])
+        # First, get the approval request to extract vendor_id
+        with get_db_connection().cursor() as cursor:
+            cursor.execute("""
+                SELECT overall_status, request_data 
+                FROM approval_requests 
+                WHERE approval_id = %s
+            """, [approval_id])
+            
+            result = cursor.fetchone()
+            
+            if not result:
+                return Response({
+                    'status': 'not_found',
+                    'message': 'Approval request not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            overall_status, request_data = result
+            
+            # Parse request_data to get vendor_id
+            vendor_id = None
+            if request_data:
+                try:
+                    if isinstance(request_data, str):
+                        request_data_obj = json.loads(request_data)
+                    else:
+                        request_data_obj = request_data
+                    
+                    # Extract vendor_id from request_data
+                    rd = request_data_obj.get('request_data', request_data_obj)
+                    vendor_id = rd.get('vendor_id')
+                    approval_type = rd.get('approval_type', '').lower()
+                    
+                    # For response_approval, check vendor_information
+                    if not vendor_id and approval_type == 'response_approval' and 'vendor_information' in rd:
+                        vendor_info = rd['vendor_information']
+                        if isinstance(vendor_info, dict):
+                            vendor_id = vendor_info.get('vendor_id') or vendor_info.get('id')
+                    
+                    # For response_approval, also check assignment_summary
+                    if not vendor_id and approval_type == 'response_approval' and 'assignment_summary' in rd:
+                        assignment_summary = rd['assignment_summary']
+                        if isinstance(assignment_summary, dict):
+                            vendor_id = assignment_summary.get('vendor_id') or assignment_summary.get('vendor_temp_id')
+                            
+                except Exception as parse_error:
+                    print(f"Error parsing request_data: {str(parse_error)}")
+            
+            # If approval is not approved yet, return pending status
+            if overall_status != 'APPROVED':
+                return Response({
+                    'status': 'pending',
+                    'message': 'Approval not yet completed'
+                }, status=status.HTTP_200_OK)
+            
+            # If we have vendor_id, check for risks
+            if vendor_id:
+                # Check if risks have been generated for this vendor
+                # Risks are stored with entity='vendor_management' and row=vendor_id
+                risks = Risk.objects.filter(
+                    entity='vendor_management',
+                    row=str(vendor_id)
+                )
                 
-                result = cursor.fetchone()
+                risk_count = risks.count()
                 
-                if not result:
+                if risk_count > 0:
                     return Response({
-                        'status': 'not_found',
-                        'message': 'Approval request not found'
-                    }, status=status.HTTP_404_NOT_FOUND)
-                
-                overall_status, request_data = result
-                
-                if overall_status == 'APPROVED':
+                        'status': 'completed',
+                        'risk_count': risk_count,
+                        'vendor_id': vendor_id,
+                        'message': f'Risk generation completed. {risk_count} risks identified.'
+                    }, status=status.HTTP_200_OK)
+                else:
+                    # Approval is approved but no risks found yet - generation in progress
                     return Response({
                         'status': 'in_progress',
                         'risk_count': 0,
+                        'vendor_id': vendor_id,
                         'message': 'Risk generation is in progress...'
                     }, status=status.HTTP_200_OK)
-                else:
-                    return Response({
-                        'status': 'pending',
-                        'message': 'Approval not yet completed'
-                    }, status=status.HTTP_200_OK)
+            else:
+                # Approval is approved but vendor_id not found
+                return Response({
+                    'status': 'error',
+                    'message': 'Vendor ID not found in approval request data'
+                }, status=status.HTTP_200_OK)
     
     except Exception as e:
         print(f"Error checking risk generation status: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         return Response({
             'error': 'Failed to check risk generation status',
             'details': str(e)
@@ -9638,7 +9892,7 @@ def check_risk_generation_status(request, approval_id):
 
 
 @api_view(['GET'])
-@authentication_classes([UnifiedJWTAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([SimpleAuthenticatedPermission])
 @rbac_vendor_required('view_vendors')
 def get_approval_version_history(request, approval_id):
@@ -9649,7 +9903,7 @@ def get_approval_version_history(request, approval_id):
     Each approval, rejection, and decision is recorded with an incremented version number.
     """
     try:
-        with connections['tprm'].cursor() as cursor:
+        with get_db_connection().cursor() as cursor:
             # First, verify the approval exists
             cursor.execute("""
                 SELECT ar.approval_id, ar.request_title, ar.overall_status, aw.workflow_type, ar.created_at
@@ -9734,4 +9988,3 @@ def get_approval_version_history(request, approval_id):
             'error': 'Failed to retrieve version history',
             'details': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-

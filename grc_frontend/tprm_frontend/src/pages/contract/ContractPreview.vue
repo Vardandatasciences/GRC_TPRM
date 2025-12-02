@@ -418,6 +418,7 @@ const parentContract = ref({})
 const isSubcontract = ref(false)
 const allTermQuestionnaires = ref([]) // Store questionnaires loaded from sessionStorage
 const selectedTemplates = ref({}) // Store selected template_id by term_id: { term_id: template_id }
+const templateQuestionsCache = ref({}) // OPTIMIZATION: Cache for template questions { template_id: questions[] }
 
 // Methods
 const goBack = () => {
@@ -856,6 +857,7 @@ async function loadQuestionnairesInBackground(terms) {
 
 // Get questionnaires for a specific term (used when saving)
 // Now uses selected template if available, otherwise falls back to direct questionnaires
+// OPTIMIZED: Uses cached data to avoid API calls
 const getQuestionnairesForTerm = async (termId, termCategory, termTitle) => {
   const termIdStr = String(termId || '')
   
@@ -864,8 +866,15 @@ const getQuestionnairesForTerm = async (termId, termCategory, termTitle) => {
   if (selectedTemplateId) {
     try {
       console.log(`📋 Using selected template ${selectedTemplateId} for term ${termIdStr} in preview`)
-      // When a template is selected, fetch ALL questions from that template
-      // Don't pass term_id or term_category to get ALL questions (not filtered)
+      
+      // OPTIMIZATION: Check cache first to avoid API call
+      if (templateQuestionsCache.value[selectedTemplateId]) {
+        console.log(`✅ Using CACHED questions for template ${selectedTemplateId} (${templateQuestionsCache.value[selectedTemplateId].length} questions)`)
+        return templateQuestionsCache.value[selectedTemplateId]
+      }
+      
+      // If not cached, fetch from API (fallback for older data)
+      console.log(`⚠️ Template ${selectedTemplateId} not in cache, fetching from API...`)
       const response = await apiService.getTemplateQuestions(selectedTemplateId, null, null)
       const questions = response.questions || []
       
@@ -885,6 +894,9 @@ const getQuestionnairesForTerm = async (termId, termCategory, termTitle) => {
         allow_document_upload: q.allow_document_upload || false,
         template_id: selectedTemplateId // Include template_id for reference
       }))
+      
+      // Cache for next time
+      templateQuestionsCache.value[selectedTemplateId] = formattedQuestions
       
       console.log(`📋 Returning ${formattedQuestions.length} formatted questions from selected template in preview`)
       return formattedQuestions
@@ -1076,10 +1088,12 @@ onMounted(async () => {
       contractClauses.value = data.contractClauses || []
       allTermQuestionnaires.value = data.allTermQuestionnaires || []
       selectedTemplates.value = data.selectedTemplates || {} // Load selected templates
+      templateQuestionsCache.value = data.templateQuestionsCache || {} // OPTIMIZATION: Load cached template questions
       console.log('🔍 Contract terms:', contractTerms.value)
       console.log('🔍 Contract clauses:', contractClauses.value)
       console.log(`📋 Loaded ${allTermQuestionnaires.value.length} questionnaires from sessionStorage`)
       console.log(`📋 Loaded selected templates:`, selectedTemplates.value)
+      console.log(`📋 Loaded ${Object.keys(templateQuestionsCache.value).length} cached template question sets`)
       
       // If questionnaires are missing and we have terms, load them in background
       if (allTermQuestionnaires.value.length === 0 && contractTerms.value.length > 0) {

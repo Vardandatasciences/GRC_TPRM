@@ -1678,6 +1678,8 @@ const allTermTemplates = ref([]) // [{ term_id, templates: [] }]
 const selectedTemplates = ref({}) // { [term_id]: template_id }
 const loadedTemplatesForTerms = ref(new Set())
 const expandedTemplateSections = ref({})
+// Cache for template questions to avoid repeated API calls
+const templateQuestionsCache = ref({}) // { [template_id]: questions[] }
 
 const isTemplateSectionExpanded = (termId) => {
   const termIdStr = String(termId || '')
@@ -1911,6 +1913,16 @@ const fetchVendors = async () => {
   }
 }
 
+// Helper function to get stored token from localStorage
+const getStoredToken = () => {
+  const keys = ['access_token', 'session_token', 'token', 'jwt_token']
+  for (const key of keys) {
+    const val = localStorage.getItem(key)
+    if (val) return val
+  }
+  return null
+}
+
 const handleFileUpload = async (event) => {
   console.log('📁 Subcontract file upload triggered:', event)
   
@@ -1957,6 +1969,12 @@ const handleFileUpload = async (event) => {
     // Hint backend to run only contract extraction
     uploadFormData.append('mode', 'contract_only')
     
+    // Get authentication token
+    const token = getStoredToken()
+    if (!token) {
+      throw new Error('Authentication required. Please log in to upload files.')
+    }
+    
     console.log('📤 Uploading subcontract file to OCR service...')
     
     // Simulate progress updates
@@ -1966,22 +1984,79 @@ const handleFileUpload = async (event) => {
       }
     }, 500)
     
-    // Call the OCR API endpoint
+    // Call the OCR API endpoint with authentication
+    // Note: Don't set Content-Type header - browser will set it with boundary for FormData
+    const headers = {
+      'Authorization': `Bearer ${token}`
+    }
+    
     const response = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
       method: 'POST',
+      headers: headers,
       body: uploadFormData,
-      // Don't set Content-Type header - browser will set it with boundary for FormData
     })
     
     clearInterval(progressInterval)
-    uploadProgress.value = 100
     
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
+    // Handle 401 errors - try to refresh token and retry
+    let finalResponse = response
+    if (response.status === 401) {
+      console.log('🔄 401 error detected, attempting token refresh...')
+      
+      try {
+        // Try to refresh token
+        const refreshToken = localStorage.getItem('refresh_token')
+        if (refreshToken) {
+          const refreshResponse = await fetch('http://localhost:8000/api/jwt/refresh/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ refresh_token: refreshToken })
+          })
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json()
+            if (refreshData.status === 'success') {
+              // Update tokens
+              localStorage.setItem('access_token', refreshData.access_token)
+              if (refreshData.refresh_token) {
+                localStorage.setItem('refresh_token', refreshData.refresh_token)
+              }
+              
+              // Retry the upload with new token
+              console.log('✅ Token refreshed, retrying OCR upload...')
+              const newToken = getStoredToken()
+              const retryHeaders = {
+                'Authorization': `Bearer ${newToken}`
+              }
+              
+              finalResponse = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
+                method: 'POST',
+                headers: retryHeaders,
+                body: uploadFormData,
+              })
+            }
+          }
+        }
+      } catch (refreshError) {
+        console.error('❌ Token refresh failed:', refreshError)
+        // Continue to error handling below
+      }
     }
     
-    const result = await response.json()
+    uploadProgress.value = 100
+    
+    if (!finalResponse.ok) {
+      const errorData = await finalResponse.json().catch(() => ({ error: 'Unknown error' }))
+      const errorMessage = errorData.error || `HTTP ${finalResponse.status}: ${finalResponse.statusText}`
+      if (finalResponse.status === 401) {
+        throw new Error('Authentication required. Please log in again.')
+      }
+      throw new Error(errorMessage)
+    }
+    
+    const result = await finalResponse.json()
     console.log('✅ OCR processing completed:', result)
     
     // Handle S3 upload information
@@ -2709,22 +2784,94 @@ const handleSubmitForReview = async () => {
       console.warn('⚠️ Warning: vendor_id is null - subcontract will require vendor information from parent contract')
     }
 
-    // Collect questionnaires for each term
+    // Optimize questionnaire loading: Only load what's needed
     let termsWithQuestionnaires = []
+    
     if (contractTerms.value.length > 0) {
-      if (allTermQuestionnaires.value.length === 0) {
+      // Check if any terms have selected templates (these need template questions)
+      const termsWithTemplates = contractTerms.value.filter(term => {
+        const termIdStr = String(term.term_id || '')
+        return selectedTemplates.value[termIdStr]
+      })
+      
+      // Check if any terms need questionnaires from allTermQuestionnaires
+      const termsNeedingQuestionnaires = contractTerms.value.filter(term => {
+        const termIdStr = String(term.term_id || '')
+        // If template is selected, we'll load template questions (already cached or will be loaded)
+        if (selectedTemplates.value[termIdStr]) return false
+        // Otherwise, check if we need to load questionnaires
+        return term.term_category || term.term_id
+      })
+      
+      // Only load questionnaires if needed and not already loaded
+      if (termsNeedingQuestionnaires.length > 0 && allTermQuestionnaires.value.length === 0) {
+        console.log('📋 Loading questionnaires for terms without templates...')
         await loadTermQuestionnaires()
       }
-      termsWithQuestionnaires = await Promise.all(
-        contractTerms.value.map(async (term) => {
-          const questionnaires = await getQuestionnairesForTerm(term.term_id, term.term_category, term.term_title)
-          const termPlain = JSON.parse(JSON.stringify(term))
-          return {
-            ...termPlain,
-            questionnaires
+      
+      // Load template questions in parallel for terms with selected templates
+      if (termsWithTemplates.length > 0) {
+        console.log(`📋 Loading template questions for ${termsWithTemplates.length} terms with templates...`)
+        const templateLoadPromises = termsWithTemplates.map(async (term) => {
+          const termIdStr = String(term.term_id || '')
+          const templateId = selectedTemplates.value[termIdStr]
+          if (!templateId) return null
+          
+          // Check cache first
+          if (templateQuestionsCache.value[templateId]) {
+            return { term, questionnaires: templateQuestionsCache.value[templateId] }
+          }
+          
+          try {
+            const response = await apiService.getTemplateQuestions(templateId, null, null)
+            const questions = response.questions || []
+            const mappedQuestions = questions.map(q => ({
+              question_id: q.question_id,
+              question_text: q.question_text || '',
+              question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
+              is_required: q.is_required || false,
+              scoring_weightings: q.weightage || 10.0,
+              question_category: q.question_category || 'Contract',
+              options: q.options || [],
+              help_text: q.help_text || '',
+              metric_name: q.metric_name || null,
+              allow_document_upload: q.allow_document_upload || false,
+              template_id: templateId
+            }))
+            // Cache the questions
+            templateQuestionsCache.value[templateId] = mappedQuestions
+            return { term, questionnaires: mappedQuestions }
+          } catch (error) {
+            console.error(`Error loading template questions for term ${term.term_id}:`, error)
+            return { term, questionnaires: [] }
           }
         })
-      )
+        
+        const templateResults = await Promise.all(templateLoadPromises)
+        templateResults.forEach(result => {
+          if (result) {
+            const termPlain = JSON.parse(JSON.stringify(result.term))
+            termsWithQuestionnaires.push({
+              ...termPlain,
+              questionnaires: result.questionnaires
+            })
+          }
+        })
+      }
+      
+      // Process remaining terms (those without templates) - use already loaded questionnaires
+      const processedTermIds = new Set(termsWithQuestionnaires.map(t => String(t.term_id || '')))
+      for (const term of contractTerms.value) {
+        const termIdStr = String(term.term_id || '')
+        if (processedTermIds.has(termIdStr)) continue
+        
+        const questionnaires = await getQuestionnairesForTerm(term.term_id, term.term_category, term.term_title)
+        const termPlain = JSON.parse(JSON.stringify(term))
+        termsWithQuestionnaires.push({
+          ...termPlain,
+          questionnaires
+        })
+      }
     }
     
     // Store subcontract data in session storage for the main contract page
@@ -2756,9 +2903,8 @@ const handleSubmitForReview = async () => {
       custom_fields: normalizeJsonField(formData.value.custom_fields, 'fields'),
       compliance_framework: (formData.value.compliance_frameworks && formData.value.compliance_frameworks.length > 0) ? formData.value.compliance_frameworks[0] : (formData.value.compliance_framework || ''),
       file_path: formData.value.file_path || '',  // S3 URL for uploaded subcontract document
-      permission_required: Boolean(formData.value.permission_required),  // Whether parent contract can view this subcontract
-      terms: termsWithQuestionnaires,
-      clauses: contractClauses.value
+      permission_required: Boolean(formData.value.permission_required)  // Whether parent contract can view this subcontract
+      // Note: terms and clauses are saved separately via saveContractTerms() and saveContractClauses() to avoid duplication
     }
     
     console.log('💾 Storing subcontract data in session storage:', subcontractData)
@@ -2873,21 +3019,94 @@ const handleFinalSubmit = async () => {
     
     console.log('✅ Final vendor_id for subcontract:', vendorId)
     
+    // Optimize questionnaire loading: Only load what's needed
     let termsWithQuestionnaires = []
+    
     if (contractTerms.value.length > 0) {
-      if (allTermQuestionnaires.value.length === 0) {
+      // Check if any terms have selected templates (these need template questions)
+      const termsWithTemplates = contractTerms.value.filter(term => {
+        const termIdStr = String(term.term_id || '')
+        return selectedTemplates.value[termIdStr]
+      })
+      
+      // Check if any terms need questionnaires from allTermQuestionnaires
+      const termsNeedingQuestionnaires = contractTerms.value.filter(term => {
+        const termIdStr = String(term.term_id || '')
+        // If template is selected, we'll load template questions (already cached or will be loaded)
+        if (selectedTemplates.value[termIdStr]) return false
+        // Otherwise, check if we need to load questionnaires
+        return term.term_category || term.term_id
+      })
+      
+      // Only load questionnaires if needed and not already loaded
+      if (termsNeedingQuestionnaires.length > 0 && allTermQuestionnaires.value.length === 0) {
+        console.log('📋 Loading questionnaires for terms without templates...')
         await loadTermQuestionnaires()
       }
-      termsWithQuestionnaires = await Promise.all(
-        contractTerms.value.map(async (term) => {
-          const questionnaires = await getQuestionnairesForTerm(term.term_id, term.term_category, term.term_title)
-          const termPlain = JSON.parse(JSON.stringify(term))
-          return {
-            ...termPlain,
-            questionnaires
+      
+      // Load template questions in parallel for terms with selected templates
+      if (termsWithTemplates.length > 0) {
+        console.log(`📋 Loading template questions for ${termsWithTemplates.length} terms with templates...`)
+        const templateLoadPromises = termsWithTemplates.map(async (term) => {
+          const termIdStr = String(term.term_id || '')
+          const templateId = selectedTemplates.value[termIdStr]
+          if (!templateId) return null
+          
+          // Check cache first
+          if (templateQuestionsCache.value[templateId]) {
+            return { term, questionnaires: templateQuestionsCache.value[templateId] }
+          }
+          
+          try {
+            const response = await apiService.getTemplateQuestions(templateId, null, null)
+            const questions = response.questions || []
+            const mappedQuestions = questions.map(q => ({
+              question_id: q.question_id,
+              question_text: q.question_text || '',
+              question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
+              is_required: q.is_required || false,
+              scoring_weightings: q.weightage || 10.0,
+              question_category: q.question_category || 'Contract',
+              options: q.options || [],
+              help_text: q.help_text || '',
+              metric_name: q.metric_name || null,
+              allow_document_upload: q.allow_document_upload || false,
+              template_id: templateId
+            }))
+            // Cache the questions
+            templateQuestionsCache.value[templateId] = mappedQuestions
+            return { term, questionnaires: mappedQuestions }
+          } catch (error) {
+            console.error(`Error loading template questions for term ${term.term_id}:`, error)
+            return { term, questionnaires: [] }
           }
         })
-      )
+        
+        const templateResults = await Promise.all(templateLoadPromises)
+        templateResults.forEach(result => {
+          if (result) {
+            const termPlain = JSON.parse(JSON.stringify(result.term))
+            termsWithQuestionnaires.push({
+              ...termPlain,
+              questionnaires: result.questionnaires
+            })
+          }
+        })
+      }
+      
+      // Process remaining terms (those without templates) - use already loaded questionnaires
+      const processedTermIds = new Set(termsWithQuestionnaires.map(t => String(t.term_id || '')))
+      for (const term of contractTerms.value) {
+        const termIdStr = String(term.term_id || '')
+        if (processedTermIds.has(termIdStr)) continue
+        
+        const questionnaires = await getQuestionnairesForTerm(term.term_id, term.term_category, term.term_title)
+        const termPlain = JSON.parse(JSON.stringify(term))
+        termsWithQuestionnaires.push({
+          ...termPlain,
+          questionnaires
+        })
+      }
     }
     
     // Prepare subcontract data
@@ -2919,9 +3138,8 @@ const handleFinalSubmit = async () => {
       custom_fields: safeJson(formData.value.custom_fields, 'fields'),
       compliance_framework: (formData.value.compliance_frameworks && formData.value.compliance_frameworks.length > 0) ? formData.value.compliance_frameworks[0] : (formData.value.compliance_framework || ''),
       file_path: formData.value.file_path || '',  // S3 URL for uploaded subcontract document
-      permission_required: Boolean(formData.value.permission_required),  // Whether parent contract can view this subcontract
-      terms: termsWithQuestionnaires,
-      clauses: contractClauses.value
+      permission_required: Boolean(formData.value.permission_required)  // Whether parent contract can view this subcontract
+      // Note: terms and clauses are saved separately via saveContractTerms() and saveContractClauses() to avoid duplication
     }
     
     // Debug the prepared subcontract data
@@ -3167,10 +3385,26 @@ const removeClause = (clauseId) => {
 // Questionnaire helpers
 const loadTermQuestionnaires = async () => {
   try {
-    const uniqueCategories = [...new Set(contractTerms.value.map(t => t.term_category).filter(Boolean))]
-    const uniqueTermIds = [...new Set(contractTerms.value.map(t => t.term_id).filter(Boolean))]
+    // Only load questionnaires for terms that don't have selected templates
+    // Terms with templates will use template questions instead
+    const termsNeedingQuestionnaires = contractTerms.value.filter(term => {
+      const termIdStr = String(term.term_id || '')
+      // Skip if template is selected (will use template questions)
+      if (selectedTemplates.value[termIdStr]) return false
+      // Only load if term has category or term_id
+      return term.term_category || term.term_id
+    })
+    
+    if (termsNeedingQuestionnaires.length === 0) {
+      console.log('✅ No terms need questionnaires (all have templates or no category/term_id)')
+      return
+    }
+    
+    const uniqueCategories = [...new Set(termsNeedingQuestionnaires.map(t => t.term_category).filter(Boolean))]
+    const uniqueTermIds = [...new Set(termsNeedingQuestionnaires.map(t => t.term_id).filter(Boolean))]
     const loadPromises = []
 
+    // Load by category (more efficient - one call per category)
     uniqueCategories.forEach(category => {
       loadPromises.push(
         apiService.getQuestionnairesByTermTitle(null, null, category)
@@ -3189,7 +3423,14 @@ const loadTermQuestionnaires = async () => {
       )
     })
 
-    uniqueTermIds.forEach(termId => {
+    // Only load by term_id if we have term_ids that aren't covered by categories
+    // This reduces redundant API calls
+    const termIdsWithoutCategories = uniqueTermIds.filter(termId => {
+      const term = contractTerms.value.find(t => String(t.term_id) === String(termId))
+      return term && !term.term_category
+    })
+    
+    termIdsWithoutCategories.forEach(termId => {
       loadPromises.push(
         apiService.getQuestionnairesByTermTitle(null, termId, null)
           .then(response => {
@@ -3206,6 +3447,12 @@ const loadTermQuestionnaires = async () => {
       )
     })
 
+    if (loadPromises.length === 0) {
+      console.log('✅ No questionnaire API calls needed')
+      return
+    }
+
+    console.log(`📋 Loading questionnaires: ${uniqueCategories.length} categories, ${termIdsWithoutCategories.length} term_ids`)
     const results = await Promise.all(loadPromises)
     const combined = results.flat()
     const seen = new Set()
@@ -3214,6 +3461,7 @@ const loadTermQuestionnaires = async () => {
       seen.add(q.question_id)
       return true
     })
+    console.log(`✅ Loaded ${allTermQuestionnaires.value.length} unique questionnaires`)
   } catch (error) {
     console.error('Error loading term questionnaires:', error)
   }
@@ -3355,20 +3603,31 @@ const loadTemplatesForTerm = async (term) => {
 const viewTemplateQuestions = async (termId, templateId) => {
   try {
     const term = contractTerms.value.find(t => String(t.term_id) === String(termId))
-    const response = await apiService.getTemplateQuestions(templateId, String(termId), term?.term_category)
-    const questions = response.questions || []
-    selectedQuestionnaires.value = questions.map(q => ({
-      question_id: q.question_id,
-      question_text: q.question_text || '',
-      question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
-      is_required: q.is_required || false,
-      scoring_weightings: q.weightage || 10.0,
-      question_category: q.question_category || 'Contract',
-      options: q.options || [],
-      help_text: q.help_text || '',
-      metric_name: q.metric_name || null,
-      allow_document_upload: q.allow_document_upload || false
-    }))
+    
+    // Check cache first
+    if (templateQuestionsCache.value[templateId]) {
+      console.log(`✅ Using cached questions for template ${templateId}`)
+      selectedQuestionnaires.value = templateQuestionsCache.value[templateId]
+    } else {
+      const response = await apiService.getTemplateQuestions(templateId, String(termId), term?.term_category)
+      const questions = response.questions || []
+      const mappedQuestions = questions.map(q => ({
+        question_id: q.question_id,
+        question_text: q.question_text || '',
+        question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
+        is_required: q.is_required || false,
+        scoring_weightings: q.weightage || 10.0,
+        question_category: q.question_category || 'Contract',
+        options: q.options || [],
+        help_text: q.help_text || '',
+        metric_name: q.metric_name || null,
+        allow_document_upload: q.allow_document_upload || false
+      }))
+      // Cache the questions
+      templateQuestionsCache.value[templateId] = mappedQuestions
+      selectedQuestionnaires.value = mappedQuestions
+    }
+    
     selectedTermTitle.value = term?.term_title || 'Unknown Term'
     selectedTermId.value = termId
     showQuestionnairesModal.value = true
@@ -3495,11 +3754,18 @@ const getQuestionnairesForTerm = async (termId, termCategory, termTitle) => {
   const termIdStr = String(termId || '')
   const selectedTemplateId = selectedTemplates.value[termIdStr]
 
+  // If a template is selected, use cached questions or load from API
   if (selectedTemplateId) {
+    // Check cache first
+    if (templateQuestionsCache.value[selectedTemplateId]) {
+      console.log(`✅ Using cached questions for template ${selectedTemplateId}`)
+      return templateQuestionsCache.value[selectedTemplateId]
+    }
+    
     try {
       const response = await apiService.getTemplateQuestions(selectedTemplateId, null, null)
       const questions = response.questions || []
-      return questions.map(q => ({
+      const mappedQuestions = questions.map(q => ({
         question_id: q.question_id,
         question_text: q.question_text || '',
         question_type: mapAnswerTypeToQuestionType(q.answer_type || 'TEXT'),
@@ -3512,12 +3778,16 @@ const getQuestionnairesForTerm = async (termId, termCategory, termTitle) => {
         allow_document_upload: q.allow_document_upload || false,
         template_id: selectedTemplateId
       }))
+      // Cache the questions
+      templateQuestionsCache.value[selectedTemplateId] = mappedQuestions
+      return mappedQuestions
     } catch (error) {
       console.error(`Error loading questions from template ${selectedTemplateId}:`, error)
       return []
     }
   }
 
+  // If no template selected, use questionnaires from allTermQuestionnaires (already loaded)
   if (!allTermQuestionnaires.value.length) return []
   const termCategoryLower = termCategory ? termCategory.toLowerCase() : ''
   const termIdLower = termIdStr.toLowerCase()

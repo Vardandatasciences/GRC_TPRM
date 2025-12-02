@@ -183,6 +183,11 @@ class DocumentUploadView(APIView):
                     except:
                         pass
                     
+                    # Ensure reporting_frequency is not empty or None
+                    reporting_freq = extraction_data.get('reporting_frequency', '') or 'monthly'
+                    if not reporting_freq or reporting_freq.strip() == '':
+                        reporting_freq = 'monthly'
+                    
                     extracted_data = ExtractedData.objects.create(
                         DocumentId_id=document.DocumentId,  # Pass integer ID
                         OcrResultId_id=ocr_result.OcrResultId,  # Pass integer ID
@@ -194,7 +199,7 @@ class DocumentUploadView(APIView):
                         expiry_date=expiry_date,
                         status=extraction_data.get('status', 'PENDING'),
                         business_service_impacted=extraction_data.get('business_service_impacted', ''),
-                        reporting_frequency=extraction_data.get('reporting_frequency', 'monthly'),
+                        reporting_frequency=reporting_freq,
                         baseline_period=extraction_data.get('baseline_period', ''),
                         improvement_targets=extraction_data.get('improvement_targets', {}),
                         penalty_threshold=penalty_threshold,
@@ -481,47 +486,81 @@ class BcpDrpOcrRunView(APIView):
     def post(self, request, plan_id):
         """Run OCR on a BCP/DRP plan document"""
         try:
-            logger.info(f"[INFO] BCP/DRP OCR run request for plan_id: {plan_id}")
+            # Ensure plan_id is an integer
+            try:
+                plan_id = int(plan_id)
+            except (ValueError, TypeError):
+                logger.error(f"[ERROR] Invalid plan_id type: {plan_id}")
+                return Response({
+                    'success': False,
+                    'error': f'Invalid plan_id: {plan_id}. Must be an integer.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            logger.info(f"[INFO] BCP/DRP OCR run request for plan_id: {plan_id} (type: {type(plan_id).__name__})")
             
             # Get plan document from BCP/DRP database first
             try:
-                # Import here to avoid circular imports
-                from bcpdrp.models import Plan
+                # Import here to avoid circular imports - use full module path
+                from tprm_backend.bcpdrp.models import Plan
                 plan = Plan.objects.get(plan_id=plan_id)
                 plan_type = plan.plan_type
                 file_uri = plan.file_uri
                 
-                if not file_uri:
+                logger.info(f"[INFO] Found plan: {plan_id}, type: {plan_type}, file_uri: {file_uri}")
+                
+                if not file_uri or (isinstance(file_uri, str) and file_uri.strip() == ''):
+                    logger.error(f"[ERROR] No file_uri found for plan {plan_id}")
                     return Response({
                         'success': False,
-                        'error': f'No document file found for plan {plan_id}'
+                        'error': f'No document file found for plan {plan_id}. Please ensure the plan has a file uploaded.'
                     }, status=status.HTTP_404_NOT_FOUND)
                 
                 logger.info(f"[INFO] Processing {plan_type} plan {plan_id} with file: {file_uri}")
                 
+            except ImportError as e:
+                logger.error(f"[ERROR] Failed to import Plan model: {e}", exc_info=True)
+                return Response({
+                    'success': False,
+                    'error': f'Failed to import Plan model: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             except Plan.DoesNotExist:
+                logger.error(f"[ERROR] Plan {plan_id} not found in database")
                 return Response({
                     'success': False,
                     'error': f'Plan {plan_id} not found'
                 }, status=status.HTTP_404_NOT_FOUND)
-            
-            # Validate request data (optional validation)
-            serializer = BcpDrpOcrRunSerializer(data={
-                'plan_id': plan_id,
-                'plan_type': plan_type,
-                'file_uri': file_uri
-            })
-            
-            if not serializer.is_valid():
-                logger.error(f"[ERROR] Invalid request data: {serializer.errors}")
+            except Exception as e:
+                logger.error(f"[ERROR] Error retrieving plan {plan_id}: {e}", exc_info=True)
                 return Response({
                     'success': False,
-                    'error': 'Invalid request data',
-                    'details': serializer.errors
+                    'error': f'Error retrieving plan: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # Validate request data (optional validation)
+            try:
+                serializer = BcpDrpOcrRunSerializer(data={
+                    'plan_id': plan_id,
+                    'plan_type': plan_type,
+                    'file_uri': file_uri
+                })
+                
+                if not serializer.is_valid():
+                    logger.error(f"[ERROR] Invalid request data: {serializer.errors}")
+                    return Response({
+                        'success': False,
+                        'error': 'Invalid request data',
+                        'details': serializer.errors
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                logger.error(f"[ERROR] Serializer validation error: {e}", exc_info=True)
+                return Response({
+                    'success': False,
+                    'error': f'Validation error: {str(e)}'
                 }, status=status.HTTP_400_BAD_REQUEST)
             
             # Process document with OCR and AI extraction
             try:
+                logger.info(f"[INFO] Starting OCR processing for plan {plan_id}")
                 # Run OCR and AI extraction
                 result = document_service.process_bcp_drp_document(
                     plan_id=plan_id,
@@ -529,7 +568,9 @@ class BcpDrpOcrRunView(APIView):
                     file_uri=file_uri
                 )
                 
-                if result['success']:
+                logger.info(f"[INFO] OCR processing result: success={result.get('success')}")
+                
+                if result.get('success'):
                     logger.info(f"[SUCCESS] OCR processing completed for plan {plan_id}")
                     response_data = {
                         'success': True,
@@ -538,29 +579,37 @@ class BcpDrpOcrRunView(APIView):
                             'extracted_data': result.get('extracted_data', {}),
                             'ocr_text': result.get('ocr_text', ''),
                             'confidence': result.get('confidence', 0.0)
-                        }
+                        },
+                        'extracted_data': result.get('extracted_data', {})  # Also include at top level for frontend compatibility
                     }
-                    logger.info(f"[DEBUG] Returning response data: {response_data}")
+                    logger.info(f"[DEBUG] Returning response data with extracted_data keys: {list(result.get('extracted_data', {}).keys())}")
                     return Response(response_data, content_type='application/json')
                 else:
-                    logger.error(f"[ERROR] OCR processing failed: {result.get('error')}")
+                    error_msg = result.get('error', 'OCR processing failed')
+                    logger.error(f"[ERROR] OCR processing failed: {error_msg}")
                     return Response({
                         'success': False,
-                        'error': result.get('error', 'OCR processing failed')
+                        'error': error_msg
                     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                     
             except Exception as e:
-                logger.error(f"[ERROR] OCR processing error: {e}")
+                logger.error(f"[ERROR] OCR processing exception: {e}", exc_info=True)
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error(f"[ERROR] Full traceback: {error_trace}")
                 return Response({
                     'success': False,
                     'error': f'OCR processing failed: {str(e)}'
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 
         except Exception as e:
-            logger.error(f"[ERROR] BCP/DRP OCR run error: {e}")
+            logger.error(f"[ERROR] BCP/DRP OCR run exception: {e}", exc_info=True)
+            import traceback
+            error_trace = traceback.format_exc()
+            logger.error(f"[ERROR] Full traceback: {error_trace}")
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': f'Server error: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -588,9 +637,15 @@ class BcpDrpExtractDataView(APIView):
             
             # Get plan type from BCP/DRP database
             try:
-                from bcpdrp.models import Plan
+                from tprm_backend.bcpdrp.models import Plan
                 plan = Plan.objects.get(plan_id=plan_id)
                 plan_type = plan.plan_type
+            except ImportError as e:
+                logger.error(f"[ERROR] Failed to import Plan model: {e}", exc_info=True)
+                return Response({
+                    'success': False,
+                    'error': f'Failed to import Plan model: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             except Plan.DoesNotExist:
                 return Response({
                     'success': False,
@@ -601,7 +656,7 @@ class BcpDrpExtractDataView(APIView):
             try:
                 if plan_type == 'BCP':
                     # Save to BCP extracted details table
-                    from bcpdrp.models import BcpDetails
+                    from tprm_backend.bcpdrp.models import BcpDetails
                     bcp_data, created = BcpDetails.objects.update_or_create(
                         plan_id=plan_id,
                         defaults={
@@ -634,7 +689,7 @@ class BcpDrpExtractDataView(APIView):
                     
                 elif plan_type == 'DRP':
                     # Save to DRP extracted details table
-                    from bcpdrp.models import DrpDetails
+                    from tprm_backend.bcpdrp.models import DrpDetails
                     drp_data, created = DrpDetails.objects.update_or_create(
                         plan_id=plan_id,
                         defaults={
@@ -704,9 +759,15 @@ class BcpDrpExtractedDataView(APIView):
             
             # Get plan type from BCP/DRP database
             try:
-                from bcpdrp.models import Plan
+                from tprm_backend.bcpdrp.models import Plan
                 plan = Plan.objects.get(plan_id=plan_id)
                 plan_type = plan.plan_type
+            except ImportError as e:
+                logger.error(f"[ERROR] Failed to import Plan model: {e}", exc_info=True)
+                return Response({
+                    'success': False,
+                    'error': f'Failed to import Plan model: {str(e)}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             except Plan.DoesNotExist:
                 return Response({
                     'success': False,
@@ -717,7 +778,7 @@ class BcpDrpExtractedDataView(APIView):
             try:
                 if plan_type == 'BCP':
                     try:
-                        from bcpdrp.models import BcpDetails
+                        from tprm_backend.bcpdrp.models import BcpDetails
                         bcp_data = BcpDetails.objects.get(plan_id=plan_id)
                         # Convert model instance to dictionary
                         extracted_data = {
@@ -753,7 +814,7 @@ class BcpDrpExtractedDataView(APIView):
                         
                 elif plan_type == 'DRP':
                     try:
-                        from bcpdrp.models import DrpDetails
+                        from tprm_backend.bcpdrp.models import DrpDetails
                         drp_data = DrpDetails.objects.get(plan_id=plan_id)
                         # Convert model instance to dictionary
                         extracted_data = {

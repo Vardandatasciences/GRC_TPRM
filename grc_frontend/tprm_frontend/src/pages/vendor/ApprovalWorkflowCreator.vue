@@ -1062,6 +1062,23 @@
                       />
                     </div>
                   </div>
+                  <!-- Weightage field for MULTI_PERSON / response approval workflows -->
+                  <div 
+                    class="col-12" 
+                    v-if="workflowForm.workflow_type === 'MULTI_PERSON' && approvalType === 'response_approval'"
+                  >
+                    <div class="form-item">
+                      <label class="form-label">Weightage</label>
+                      <input
+                        v-model.number="stage.weightage"
+                        type="number"
+                        class="form-input"
+                        min="0"
+                        max="100"
+                        placeholder="Enter weightage for this approver (e.g., 25)"
+                      />
+                    </div>
+                  </div>
                   <div class="col-12" v-if="workflowForm.workflow_type === 'MULTI_LEVEL'">
                     <div class="form-item">
                       <label class="form-label">{{ getStageTitle(index + 1) }} Order</label>
@@ -1250,7 +1267,6 @@ import notificationService from '@/services/notificationService'
 import { useVendorPermissions } from '@/composables/useVendorPermissions'
 import AccessDenied from '@/components/AccessDenied.vue'
 import permissionsService from '@/services/permissionsService'
-import { getTprmApiUrl } from '@/utils/backendEnv'
 
 export default {
   name: 'ComprehensiveWorkflowCreator',
@@ -1261,9 +1277,6 @@ export default {
   setup() {
     const route = useRoute()
     const { showSuccess, showError, showWarning, showInfo } = useNotifications()
-    
-    // API base URL for vendor-approval endpoints
-    const VENDOR_APPROVAL_API_BASE_URL = getTprmApiUrl('vendor-approval')
     
     // Initialize RBAC permissions
     const { permissions, showDeniedAlert } = useVendorPermissions()
@@ -1340,7 +1353,7 @@ export default {
           // If we got permission from backend, update localStorage
           if (hasPermission) {
             // Update user object in localStorage with permission
-            const userStr = localStorage.getItem('current_user') || localStorage.getItem('user')
+            const userStr = localStorage.getItem('user')
             if (userStr) {
               try {
                 const user = JSON.parse(userStr)
@@ -1348,7 +1361,7 @@ export default {
                   user.permissions = {}
                 }
                 user.permissions.SubmitVendorForApproval = true
-                localStorage.setItem('current_user', JSON.stringify(user))
+                localStorage.setItem('user', JSON.stringify(user))
                 console.log('Updated localStorage with permission')
               } catch (e) {
                 console.error('Error updating localStorage:', e)
@@ -1576,7 +1589,7 @@ export default {
     const fetchUsers = async () => {
       try {
         loadingUsers.value = true
-        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/users/`)
+        const response = await api.get('/api/v1/vendor-approval/users/')
         users.value = response.data
       } catch (error) {
         console.error('Error fetching users:', error)
@@ -1687,6 +1700,8 @@ export default {
         stage_order: getDefaultStageOrder(),
         stage_name: workflowForm.workflow_type === 'MULTI_PERSON' ? requestForm.request_title : '',
         stage_description: '',
+        // New field used for MULTI_PERSON / response approval workflows
+        weightage: workflowForm.workflow_type === 'MULTI_PERSON' && approvalType.value === 'response_approval' ? 0 : null,
         assigned_user_id: null,
         assigned_user_name: '',
         assigned_user_role: '',
@@ -1795,7 +1810,7 @@ export default {
         
         console.log('Submitting comprehensive workflow:', submitData)
         
-        const response = await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/create-workflow-request/`, submitData)
+        const response = await api.post('/api/v1/vendor-approval/create-workflow-request/', submitData)
         
         createdWorkflowId.value = response.data.workflow_id
         createdRequestId.value = response.data.approval_id
@@ -1917,7 +1932,7 @@ export default {
     const fetchQuestionnaires = async () => {
       try {
         loadingQuestionnaires.value = true
-        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/questionnaires/active/`)
+        const response = await api.get('/api/v1/vendor-approval/questionnaires/active/')
         
         // Ensure we have proper data structure
         if (response.data && Array.isArray(response.data)) {
@@ -1951,7 +1966,12 @@ export default {
         }
       } catch (error) {
         console.error('Error fetching questionnaires:', error)
-        showMessage('Failed to load questionnaires from database.', 'error')
+        console.error('Error details:', error.response?.data || error.message)
+        
+        // Check if we have a questionnaire_id from route query that we need to include
+        const routeQuestionnaireId = route.query.questionnaire_id
+        const routeQuestionnaireName = route.query.questionnaire_name
+        const routeQuestionnaireType = route.query.questionnaire_type
         
         // Add mock data for testing if API fails
         questionnaires.value = [
@@ -1972,6 +1992,22 @@ export default {
             created_at: new Date().toISOString()
           }
         ]
+        
+        // If we have a questionnaire_id from route query and it's not in mock data, add it
+        if (routeQuestionnaireId && !questionnaires.value.find(q => String(q.questionnaire_id) === String(routeQuestionnaireId))) {
+          console.log('Adding questionnaire from route query to mock data:', routeQuestionnaireId)
+          questionnaires.value.push({
+            questionnaire_id: routeQuestionnaireId,
+            questionnaire_name: routeQuestionnaireName || `Questionnaire ${routeQuestionnaireId}`,
+            questionnaire_type: routeQuestionnaireType || 'ONBOARDING',
+            description: 'Questionnaire loaded from route parameters',
+            version: '1.0',
+            created_at: new Date().toISOString(),
+            vendor_id: route.query.vendor_id
+          })
+        }
+        
+        showMessage('Failed to load questionnaires from database. Using fallback data.', 'warning')
       } finally {
         loadingQuestionnaires.value = false
       }
@@ -2094,7 +2130,7 @@ export default {
     const fetchVendors = async () => {
       try {
         loadingVendors.value = true
-        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/`)
+        const response = await api.get('/api/v1/vendor-approval/vendors/')
         vendors.value = response.data.vendors || []
         
         if (vendors.value.length === 0) {
@@ -2125,8 +2161,8 @@ export default {
         
         // Fetch detailed vendor information and risks in parallel
         const [vendorResponse, risksResponse] = await Promise.all([
-          api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/${vendorId}/`),
-          api.get(`${VENDOR_APPROVAL_API_BASE_URL}/vendors/${vendorId}/risks/`)
+          api.get(`/api/v1/vendor-approval/vendors/${vendorId}/`),
+          api.get(`/api/v1/vendor-approval/vendors/${vendorId}/risks/`)
         ])
         
         selectedVendorData.value = vendorResponse.data
@@ -2187,7 +2223,7 @@ export default {
       try {
         loadingQuestionnaireAssignments.value = true
         // This endpoint now returns questionnaires with status='RESPONDED'
-        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/questionnaire-assignments/submitted/`)
+        const response = await api.get('/api/v1/vendor-approval/questionnaire-assignments/submitted/')
         
         // Process the response data
         if (response.data && response.data.assignments) {

@@ -9,9 +9,12 @@ class AuthService {
         this.refreshToken = localStorage.getItem('refresh_token')
         this.isLoggingOut = false // Flag to prevent refresh during logout
         this.isRefreshing = false // Flag to prevent multiple simultaneous refresh attempts
+        this.refreshPromise = null // Promise for ongoing refresh to prevent duplicates
         this.failedRefreshAttempts = 0 // Track failed refresh attempts
         this.maxRefreshAttempts = 3 // Maximum number of refresh attempts
         this.refreshInterval = null // Periodic refresh interval
+        this.lastRefreshAttempt = 0 // Timestamp of last refresh attempt
+        this.refreshCooldown = 60000 // 1 minute cooldown after failed refresh
         this.setupAxiosInterceptors()
         this.startPeriodicTokenRefresh()
     }
@@ -69,7 +72,7 @@ class AuthService {
                     originalRequest._retry = true
                    
                     try {
-                        // Attempt to refresh the token
+                        // Attempt to refresh the token (will use existing promise if refresh in progress)
                         const refreshSuccess = await this.refreshAccessToken()
                        
                         if (refreshSuccess) {
@@ -106,7 +109,9 @@ class AuthService {
             // Reset flags on login
             this.isLoggingOut = false
             this.isRefreshing = false
+            this.refreshPromise = null
             this.failedRefreshAttempts = 0
+            this.lastRefreshAttempt = 0
            
             // ========================================
             // LICENSE VALIDATION PROCESS - AUTH SERVICE
@@ -314,12 +319,29 @@ class AuthService {
  
     async checkAndRefreshToken() {
         try {
+            // Don't check if we're logging out or already refreshing
+            if (this.isLoggingOut || this.isRefreshing) {
+                // If there's an ongoing refresh, wait for it
+                if (this.refreshPromise) {
+                    return await this.refreshPromise
+                }
+                return false
+            }
+
+            // Check cooldown period after failed refresh
+            const now = Date.now()
+            if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
+                const remainingCooldown = Math.ceil((this.refreshCooldown - (now - this.lastRefreshAttempt)) / 1000)
+                console.log(`⏳ Refresh cooldown active. Wait ${remainingCooldown}s before next attempt.`)
+                return false
+            }
+
             const accessTokenExpires = localStorage.getItem('access_token_expires')
             if (!accessTokenExpires) {
                 console.warn('⚠️ No access token expiration found')
                 return false
             }
- 
+
             const expirationTime = new Date(accessTokenExpires)
             const currentTime = new Date()
             const timeUntilExpiration = expirationTime.getTime() - currentTime.getTime()
@@ -338,76 +360,110 @@ class AuthService {
     }
  
     async refreshAccessToken() {
-        try {
-            // Don't refresh if we're logging out or already refreshing
-            if (this.isLoggingOut || this.isRefreshing) {
-                console.log('🛑 Refresh blocked: isLoggingOut=' + this.isLoggingOut + ', isRefreshing=' + this.isRefreshing)
-                return false
-            }
-
-            // Check if we've exceeded max refresh attempts
-            if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
-                console.error('❌ Max refresh attempts exceeded. Clearing tokens to force re-login.')
-                this.clearAuthData()
-                return false
-            }
-
-            this.isRefreshing = true
-
-            const refreshToken = localStorage.getItem('refresh_token')
-            if (!refreshToken) {
-                console.error('❌ No refresh token available')
-                this.failedRefreshAttempts++
-                throw new Error('No refresh token available')
-            }
- 
-            const response = await axios.post(`${this.baseURL}/api/jwt/refresh/`, {
-                refresh_token: refreshToken
-            })
- 
-            if (response.data.status === 'success') {
-                const { access_token, refresh_token, access_token_expires, refresh_token_expires } = response.data
-               
-                // Update stored tokens - CRITICAL: Also update refresh token (token rotation)
-                localStorage.setItem('access_token', access_token)
-                localStorage.setItem('access_token_expires', access_token_expires)
-                
-                // BUGFIX: Save new refresh token to prevent 401 loop
-                // Backend rotates refresh tokens for security, so we must save the new one
-                if (refresh_token) {
-                    localStorage.setItem('refresh_token', refresh_token)
-                    console.log('🔄 Refresh token updated (token rotation)')
-                }
-                if (refresh_token_expires) {
-                    localStorage.setItem('refresh_token_expires', refresh_token_expires)
-                }
-               
-                // Update axios default headers
-                axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
-               
-                // Reset failed attempts counter on success
-                this.failedRefreshAttempts = 0
-                
-                console.log('🔄 JWT token refreshed successfully')
-                return true
-            } else {
-                this.failedRefreshAttempts++
-                throw new Error(response.data.message || 'Token refresh failed')
-            }
-        } catch (error) {
-            console.error('❌ JWT token refresh error:', error)
-            this.failedRefreshAttempts++
-            
-            // If we've failed too many times, clear auth data to force re-login
-            if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
-                console.error('❌ Too many failed refresh attempts. User needs to re-login.')
-                this.clearAuthData()
-            }
-            
-            return false
-        } finally {
-            this.isRefreshing = false
+        // If there's already a refresh in progress, return that promise
+        if (this.refreshPromise) {
+            console.log('🔄 Refresh already in progress, waiting for existing refresh...')
+            return await this.refreshPromise
         }
+
+        // Don't refresh if we're logging out
+        if (this.isLoggingOut) {
+            console.log('🛑 Refresh blocked: isLoggingOut=' + this.isLoggingOut)
+            return false
+        }
+
+        // Check if we've exceeded max refresh attempts
+        if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
+            console.error('❌ Max refresh attempts exceeded. Clearing tokens to force re-login.')
+            this.clearAuthData()
+            return false
+        }
+
+        // Check cooldown period after failed refresh
+        const now = Date.now()
+        if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
+            const remainingCooldown = Math.ceil((this.refreshCooldown - (now - this.lastRefreshAttempt)) / 1000)
+            console.log(`⏳ Refresh cooldown active. Wait ${remainingCooldown}s before next attempt.`)
+            return false
+        }
+
+        // Create refresh promise to prevent duplicate refreshes
+        this.isRefreshing = true
+        this.refreshPromise = (async () => {
+            try {
+                const refreshToken = localStorage.getItem('refresh_token')
+                if (!refreshToken) {
+                    console.error('❌ No refresh token available')
+                    this.failedRefreshAttempts++
+                    this.lastRefreshAttempt = Date.now()
+                    throw new Error('No refresh token available')
+                }
+
+                this.lastRefreshAttempt = Date.now()
+ 
+                const response = await axios.post(`${this.baseURL}/api/jwt/refresh/`, {
+                    refresh_token: refreshToken
+                })
+ 
+                if (response.data.status === 'success') {
+                    const { access_token, refresh_token, access_token_expires, refresh_token_expires } = response.data
+                   
+                    // Update stored tokens - CRITICAL: Also update refresh token (token rotation)
+                    localStorage.setItem('access_token', access_token)
+                    localStorage.setItem('access_token_expires', access_token_expires)
+                    
+                    // BUGFIX: Save new refresh token to prevent 401 loop
+                    // Backend rotates refresh tokens for security, so we must save the new one
+                    if (refresh_token) {
+                        localStorage.setItem('refresh_token', refresh_token)
+                        console.log('🔄 Refresh token updated (token rotation)')
+                    }
+                    if (refresh_token_expires) {
+                        localStorage.setItem('refresh_token_expires', refresh_token_expires)
+                    }
+                   
+                    // Update axios default headers
+                    axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
+                   
+                    // Reset failed attempts counter on success
+                    this.failedRefreshAttempts = 0
+                    this.lastRefreshAttempt = 0 // Reset cooldown on success
+                    
+                    console.log('🔄 JWT token refreshed successfully')
+                    return true
+                } else {
+                    this.failedRefreshAttempts++
+                    throw new Error(response.data.message || 'Token refresh failed')
+                }
+            } catch (error) {
+                console.error('❌ JWT token refresh error:', error)
+                
+                // Handle 401 errors specifically (refresh token invalid/expired)
+                if (error.response && error.response.status === 401) {
+                    console.error('❌ Refresh token is invalid or expired (401). User needs to re-login.')
+                    this.failedRefreshAttempts = this.maxRefreshAttempts // Force max attempts
+                    this.lastRefreshAttempt = Date.now()
+                    // Don't clear auth data immediately - let user continue with limited access
+                    // They'll be prompted to login when they try to access protected resources
+                } else {
+                    this.failedRefreshAttempts++
+                    this.lastRefreshAttempt = Date.now()
+                }
+                
+                // If we've failed too many times, clear auth data to force re-login
+                if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
+                    console.error('❌ Too many failed refresh attempts. User needs to re-login.')
+                    // Don't clear immediately - let periodic refresh handle it
+                }
+                
+                return false
+            } finally {
+                this.isRefreshing = false
+                this.refreshPromise = null // Clear promise so next refresh can proceed
+            }
+        })()
+
+        return await this.refreshPromise
     }
  
     async logout() {
@@ -531,6 +587,17 @@ class AuthService {
         // Check token every 5 minutes (300 seconds) - less aggressive refresh
         this.refreshInterval = setInterval(async () => {
             try {
+                // Skip if we're logging out or in cooldown
+                if (this.isLoggingOut) {
+                    return
+                }
+
+                // Check cooldown period
+                const now = Date.now()
+                if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
+                    return
+                }
+
                 // Reduced logging - only log when actually refreshing
                 await this.checkAndRefreshToken()
             } catch (error) {

@@ -74,15 +74,36 @@ export function useRfpApi() {
    * Fetch all RFPs
    */
   const fetchRFPs = async (filters = {}) => {
-    const queryParams = new URLSearchParams(filters).toString()
+    // Remove empty/null filters
+    const cleanFilters = Object.fromEntries(
+      Object.entries(filters).filter(([_, v]) => v !== null && v !== undefined && v !== '')
+    )
+    const queryParams = new URLSearchParams(cleanFilters).toString()
+    
+    // The router registers 'rfps' under /api/v1/rfps/, so the full path is /api/v1/rfps/rfps/
+    // But we want /api/v1/rfps/ directly, so we use the router's base path
     const url = buildApiUrl(`/rfps/${queryParams ? `?${queryParams}` : ''}`)
+    
+    console.log('[useRfpApi] Fetching RFPs from URL:', url)
+    console.log('[useRfpApi] Filters:', cleanFilters)
     
     const response = await fetch(url, {
       method: 'GET',
       headers: getAuthHeaders(),
     })
     
-    return handleResponse(response)
+    const data = await handleResponse(response)
+    console.log('[useRfpApi] Response received:', {
+      type: typeof data,
+      isArray: Array.isArray(data),
+      keys: data && typeof data === 'object' ? Object.keys(data) : null,
+      count: data?.count,
+      resultsLength: data?.results?.length,
+      hasResults: !!data?.results,
+      fullResponse: data
+    })
+    
+    return data
   }
 
   /**

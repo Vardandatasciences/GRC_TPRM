@@ -1471,6 +1471,14 @@ const extractPrimaryContact = (vendor: any) => {
 const normalizeContactResponse = (contactData: any, vendorId: number) => {
   if (!contactData) return null
   
+  // If contactData is already a contact object (has contact_id), return it directly
+  // This handles the case where backend returns {success: true, contact: {...}}
+  if (contactData.contact_id && typeof contactData === 'object' && !Array.isArray(contactData)) {
+    console.log(`[DEBUG] normalizeContactResponse: Direct contact object for vendor ${vendorId}:`, contactData)
+    return contactData
+  }
+  
+  // Handle array responses
   let contacts: any[] = []
   if (Array.isArray(contactData)) {
     contacts = contactData
@@ -1481,19 +1489,29 @@ const normalizeContactResponse = (contactData: any, vendorId: number) => {
   } else if (Array.isArray(contactData.data)) {
     contacts = contactData.data
   } else if (contactData.contact) {
-    contacts = [contactData.contact]
+    // Backend returns {success: true, contact: {...}}
+    const contact = contactData.contact
+    if (contact && contact.contact_id) {
+      console.log(`[DEBUG] normalizeContactResponse: Contact from nested structure for vendor ${vendorId}:`, contact)
+      return contact
+    }
+    contacts = [contact]
   }
   
-  if (!contacts.length) return null
+  if (!contacts.length) {
+    console.log(`[DEBUG] normalizeContactResponse: No contacts found for vendor ${vendorId}`)
+    return null
+  }
   
   const numericVendorId = Number(vendorId)
-  let primary = contacts.find(contact => Number(contact.vendor) === numericVendorId && (contact.contact_type === 'PRIMARY' || contact.is_primary))
+  let primary = contacts.find(contact => Number(contact.vendor || contact.vendor_id) === numericVendorId && (contact.contact_type === 'PRIMARY' || contact.is_primary))
   if (!primary) {
-    primary = contacts.find(contact => Number(contact.vendor) === numericVendorId)
+    primary = contacts.find(contact => Number(contact.vendor || contact.vendor_id) === numericVendorId)
   }
   if (!primary && contacts.length) {
     primary = contacts[0]
   }
+  console.log(`[DEBUG] normalizeContactResponse: Selected primary contact for vendor ${vendorId}:`, primary)
   return primary || null
 }
 
@@ -1906,17 +1924,17 @@ const loadExistingVendors = async () => {
   try {
     console.log('🏢 [DEBUG] Loading existing vendors from database...')
     
-    // Load all APPROVED vendors from the vendors table via vendor-core API
-    const response = await api.get('/vendor-core/vendors/', {
-      params: {
-        status: 'APPROVED'
-      },
+    // Load all APPROVED vendors from the vendors table via RFP API
+    // Use the rfps/vendors/active/ endpoint which returns all approved vendors
+    // The RFP URLs are under /api/v1/rfps/ (compatibility route), so we use /rfps/vendors/active/
+    const response = await api.get('/rfps/vendors/active/', {
       headers: getAuthHeaders()
     })
     const data = response.data
     console.log('✅ [DEBUG] Loaded vendors response:', data)
     
     // Handle different response formats
+    // The get_all_approved_vendors endpoint returns: {success: true, vendors: [...], total: N}
     let vendors = []
     if (data && typeof data === 'object') {
       if (data.vendors && Array.isArray(data.vendors)) {
@@ -1940,32 +1958,70 @@ const loadExistingVendors = async () => {
       try {
         console.log(`📞 [DEBUG] Fetching primary contact for vendor ${vendor.vendor_id} (${vendor.company_name})`)
         
-        // Fetch primary contact from vendor_contacts table via vendor-core API
-        // Filter by contact_type='PRIMARY' to get the primary contact
-        const contactResponse = await api.get('/vendor-core/vendor-contacts/', {
-          params: {
-            vendor_id: vendor.vendor_id,
-            contact_type: 'PRIMARY',
-            is_active: 1
-          },
+        // Fetch primary contact from vendor_contacts table via RFP API
+        // Use the vendor primary contact endpoint (under /rfps/ path)
+        const contactResponse = await api.get(`/rfps/vendors/${vendor.vendor_id}/primary-contact/`, {
           headers: getAuthHeaders()
         })
         
         const contactData = contactResponse.data
         console.log(`✅ [DEBUG] Contact data for vendor ${vendor.vendor_id}:`, contactData)
         
-        const primaryContact = normalizeContactResponse(contactData, vendor.vendor_id)
+        // Handle response format: {success: true, contact: {...}} or direct contact object
+        let contact = null
+        if (contactData && contactData.success && contactData.contact) {
+          // Backend returns {success: true, contact: {...}}
+          contact = contactData.contact
+          console.log(`✅ [DEBUG] Extracted contact from success response:`, contact)
+        } else if (contactData && contactData.contact_id) {
+          // Direct contact object
+          contact = contactData
+          console.log(`✅ [DEBUG] Using direct contact object:`, contact)
+        } else if (contactData && contactData.success === false) {
+          // No contact found
+          console.log(`⚠️ [DEBUG] No contact found for vendor ${vendor.vendor_id}:`, contactData.error)
+          contact = null
+        }
+        
+        // normalizeContactResponse handles array responses, but we already have a single contact
+        // So we can use it directly if it has contact_id, otherwise try normalization
+        let primaryContact = null
+        if (contact && contact.contact_id) {
+          // Already a valid contact object, use it directly
+          primaryContact = contact
+          console.log(`✅ [DEBUG] Using contact directly (has contact_id):`, primaryContact)
+        } else if (contact) {
+          // Try normalization for array/other formats
+          primaryContact = normalizeContactResponse(contact, vendor.vendor_id)
+          console.log(`✅ [DEBUG] Contact after normalization:`, primaryContact)
+        } else {
+          console.log(`⚠️ [DEBUG] No contact available for vendor ${vendor.vendor_id}`)
+        }
+        
+        // Build contact name - use email as fallback if name is empty
+        let contactName = 'No contact'
+        if (primaryContact) {
+          const firstName = primaryContact.first_name || ''
+          const lastName = primaryContact.last_name || ''
+          contactName = `${firstName} ${lastName}`.trim()
+          // If name is empty, use email as display name
+          if (!contactName && primaryContact.email) {
+            contactName = primaryContact.email
+          } else if (!contactName) {
+            contactName = 'Contact (No name)'
+          }
+        }
         
         // Map vendor with primary contact information
         const vendorWithContact = {
           ...vendor,
           // Primary contact information from vendor_contacts table
           primary_contact: primaryContact,
-          contact_name: primaryContact ? `${primaryContact.first_name || ''} ${primaryContact.last_name || ''}`.trim() : 'No contact',
-          email: primaryContact ? primaryContact.email : 'No email',
+          contact_name: contactName,
+          email: primaryContact ? (primaryContact.email || 'No email') : 'No email',
           phone: primaryContact ? (primaryContact.mobile || primaryContact.phone || 'No phone') : 'No phone',
-          contact_designation: primaryContact ? primaryContact.designation : '',
-          contact_department: primaryContact ? primaryContact.department : '',
+          contact_designation: primaryContact ? (primaryContact.designation || '') : '',
+          contact_department: primaryContact ? (primaryContact.department || '') : '',
           // Vendor information from vendors table
           company_name: vendor.company_name || 'Unknown Company',
           website: vendor.website || '',
@@ -1991,7 +2047,11 @@ const loadExistingVendors = async () => {
         }
         
         vendorsWithContacts.push(vendorWithContact)
-        console.log(`✅ [DEBUG] Processed vendor: ${vendorWithContact.company_name} with contact: ${vendorWithContact.email}`)
+        console.log(`✅ [DEBUG] Processed vendor: ${vendorWithContact.company_name}`)
+        console.log(`   - Contact: ${vendorWithContact.contact_name}`)
+        console.log(`   - Email: ${vendorWithContact.email}`)
+        console.log(`   - Phone: ${vendorWithContact.phone}`)
+        console.log(`   - Primary contact object:`, vendorWithContact.primary_contact)
         
       } catch (contactError) {
         console.warn(`⚠️ [DEBUG] Failed to load contact for vendor ${vendor.vendor_id}:`, contactError)

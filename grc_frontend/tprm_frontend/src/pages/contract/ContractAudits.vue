@@ -285,15 +285,32 @@ const currentUser = computed(() => store.getters['auth/currentUser'])
 const loadAudits = async () => {
   try {
     loading.value = true
+    console.log('🔄 [ContractAudits] Loading audits...')
     const response = await contractAuditApi.getContractAudits()
+    console.log('📦 [ContractAudits] API Response:', response)
+    
     if (response.success) {
-      allAudits.value = response.data.results || response.data || []
+      // Handle different response structures
+      let audits = []
+      if (Array.isArray(response.data)) {
+        audits = response.data
+      } else if (response.data?.results && Array.isArray(response.data.results)) {
+        audits = response.data.results
+      } else if (response.data?.data && Array.isArray(response.data.data)) {
+        audits = response.data.data
+      } else if (response.data?.audits && Array.isArray(response.data.audits)) {
+        audits = response.data.audits
+      }
+      
+      console.log(`✅ [ContractAudits] Loaded ${audits.length} audits`)
+      allAudits.value = audits
     } else {
-      console.error('Error loading contract audits:', response.error)
+      console.error('❌ [ContractAudits] Error loading contract audits:', response.error || response.message)
       allAudits.value = []
     }
   } catch (error) {
-    console.error('Error loading contract audits:', error)
+    console.error('❌ [ContractAudits] Exception loading contract audits:', error)
+    console.error('❌ [ContractAudits] Error details:', error.response?.data || error.message)
     allAudits.value = []
   } finally {
     loading.value = false
@@ -301,14 +318,42 @@ const loadAudits = async () => {
 }
 
 // Filter audits to show only those assigned to current user or where user is auditor
+// TEMPORARY: Show all audits for debugging - will filter by user once we confirm data is loading
 const myAudits = computed(() => {
-  if (!currentUser.value) return []
+  // For now, return all audits to debug if data is loading
+  // TODO: Re-enable filtering once we confirm data is loading correctly
+  if (allAudits.value.length > 0) {
+    console.log('📋 [ContractAudits] Showing all audits for debugging:', allAudits.value.length)
+    if (currentUser.value) {
+      const currentUserId = currentUser.value.userid || currentUser.value.user_id || currentUser.value.UserId || currentUser.value.id
+      console.log('👤 [ContractAudits] Current user ID:', currentUserId)
+      
+      // Log sample audit data
+      if (allAudits.value[0]) {
+        console.log('📄 [ContractAudits] Sample audit:', {
+          audit_id: allAudits.value[0].audit_id,
+          title: allAudits.value[0].title,
+          assignee_id: allAudits.value[0].assignee_id,
+          auditor_id: allAudits.value[0].auditor_id,
+          status: allAudits.value[0].status
+        })
+      }
+    }
+  }
   
-  const currentUserId = currentUser.value.userid || currentUser.value.user_id
+  // Return all audits for now (remove filtering temporarily)
+  return allAudits.value
   
-  return allAudits.value.filter(audit => 
-    audit.assignee_id == currentUserId || audit.auditor_id == currentUserId
-  )
+  // Original filtering logic (commented out for debugging):
+  // if (!currentUser.value) {
+  //   console.warn('⚠️ [ContractAudits] No current user found')
+  //   return []
+  // }
+  // 
+  // const currentUserId = currentUser.value.userid || currentUser.value.user_id || currentUser.value.UserId || currentUser.value.id
+  // return allAudits.value.filter(audit => 
+  //   audit.assignee_id == currentUserId || audit.auditor_id == currentUserId
+  // )
 })
 
 // Filter by search term

@@ -711,6 +711,7 @@ export default {
         }
 
         // Add current user's ID to filters to get only their assigned approvals
+        // Try multiple possible user ID fields and ensure it's converted to number
         const userId = currentUser.userid || currentUser.user_id || currentUser.UserId
         if (!userId) {
           console.error('No user ID found in current user data:', currentUser)
@@ -718,24 +719,45 @@ export default {
           return
         }
 
+        // Convert to number to ensure type consistency with backend
+        const userIdNum = typeof userId === 'string' ? parseInt(userId, 10) : userId
+        if (isNaN(userIdNum)) {
+          console.error('Invalid user ID format:', userId)
+          assignedApprovals.value = []
+          return
+        }
+
         const filtersWithUser = {
           ...filters.value,
-          assignee_id: userId
+          assignee_id: userIdNum
         }
+        
+        console.log('🔍 Fetching assigned approvals for user ID:', userIdNum, 'with filters:', filtersWithUser)
         
         const response = await contractApprovalApi.getApprovals(filtersWithUser)
         
-        console.log('API Response for user', userId, ':', response)
+        console.log('📋 API Response for user', userIdNum, ':', response)
+        console.log('📋 Response data:', response.data)
+        console.log('📋 Number of approvals:', response.data?.length || 0)
         
         if (response.success && response.data) {
-          assignedApprovals.value = response.data
-          console.log('Assigned approvals set to:', assignedApprovals.value)
+          // Extra safety: ensure we only show approvals where current user is the ASSIGNEE
+          assignedApprovals.value = response.data.filter(a => {
+            const assigneeId = a.assignee_id || a.assignee || a.assigneeId
+            return String(assigneeId) === String(userIdNum)
+          })
+
+          console.log('✅ Assigned approvals set to:', assignedApprovals.value.length, 'items (filtered by assignee_id)')
+          if (assignedApprovals.value.length > 0) {
+            console.log('📄 Sample approval (assigned):', assignedApprovals.value[0])
+          }
         } else {
-          console.error('Failed to fetch approvals:', response.message || 'Unknown error')
+          console.error('❌ Failed to fetch approvals:', response.message || 'Unknown error')
           assignedApprovals.value = []
         }
       } catch (error) {
-        console.error('Error fetching my approvals:', error)
+        console.error('❌ Error fetching my approvals:', error)
+        console.error('❌ Error details:', error.response?.data || error.message)
         assignedApprovals.value = []
       } finally {
         isLoadingApprovals.value = false
@@ -754,6 +776,7 @@ export default {
         }
 
         // Add current user's ID to filters to get only their assigned reviews
+        // Try multiple possible user ID fields and ensure it's converted to number
         const userId = currentUser.userid || currentUser.user_id || currentUser.UserId
         if (!userId) {
           console.error('No user ID found in current user data:', currentUser)
@@ -761,21 +784,45 @@ export default {
           return
         }
 
+        // Convert to number to ensure type consistency with backend
+        const userIdNum = typeof userId === 'string' ? parseInt(userId, 10) : userId
+        if (isNaN(userIdNum)) {
+          console.error('Invalid user ID format:', userId)
+          reviewApprovals.value = []
+          return
+        }
+
         const filtersWithUser = {
           ...filters.value,
-          assigner_id: userId
+          assigner_id: userIdNum
         }
+        
+        console.log('🔍 Fetching review approvals for assigner ID:', userIdNum, 'with filters:', filtersWithUser)
         
         const response = await contractApprovalApi.getAssignerApprovals(filtersWithUser)
         
+        console.log('📋 API Response for assigner', userIdNum, ':', response)
+        console.log('📋 Response data:', response.data)
+        console.log('📋 Number of reviews:', response.data?.length || 0)
+        
         if (response.success && response.data) {
-          reviewApprovals.value = response.data
+          // Extra safety: ensure we only show approvals where current user is the ASSIGNER
+          reviewApprovals.value = response.data.filter(a => {
+            const assignerId = a.assigner_id || a.assigner || a.assignerId
+            return String(assignerId) === String(userIdNum)
+          })
+
+          console.log('✅ Review approvals set to:', reviewApprovals.value.length, 'items (filtered by assigner_id)')
+          if (reviewApprovals.value.length > 0) {
+            console.log('📄 Sample review (assigner):', reviewApprovals.value[0])
+          }
         } else {
-          console.error('Failed to fetch reviews:', response.message || 'Unknown error')
+          console.error('❌ Failed to fetch reviews:', response.message || 'Unknown error')
           reviewApprovals.value = []
         }
       } catch (error) {
-        console.error('Error fetching my reviews:', error)
+        console.error('❌ Error fetching my reviews:', error)
+        console.error('❌ Error details:', error.response?.data || error.message)
         reviewApprovals.value = []
       } finally {
         isLoadingReviews.value = false

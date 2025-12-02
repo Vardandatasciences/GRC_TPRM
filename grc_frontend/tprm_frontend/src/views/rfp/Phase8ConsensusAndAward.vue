@@ -685,7 +685,38 @@ const getSelectedVendorEmail = () => {
                  shortlistedProposals.value.find(p => p.response_id === selectedWinner.value)
   if (!vendor) return ''
   
-  return vendor.vendor_email || vendor.contact_email || vendor.email || ''
+  // Try multiple email locations
+  let email = vendor.vendor_email || vendor.contact_email || vendor.email || ''
+  
+  // If not found, try extracting from response_documents
+  if (!email && vendor.response_documents) {
+    try {
+      const responseDocs = typeof vendor.response_documents === 'string' 
+        ? JSON.parse(vendor.response_documents) 
+        : vendor.response_documents
+      
+      // Try companyInfo.contactEmail
+      if (responseDocs.companyInfo && responseDocs.companyInfo.contactEmail) {
+        email = responseDocs.companyInfo.contactEmail
+      }
+      // Try direct contact_email
+      if (!email && responseDocs.contact_email) {
+        email = responseDocs.contact_email
+      }
+      // Try contactEmail
+      if (!email && responseDocs.contactEmail) {
+        email = responseDocs.contactEmail
+      }
+      // Try email
+      if (!email && responseDocs.email) {
+        email = responseDocs.email
+      }
+    } catch (e) {
+      console.log('Error parsing response_documents for email:', e)
+    }
+  }
+  
+  return email
 }
 
 // Methods
@@ -714,6 +745,10 @@ const changeRfp = async () => {
 
 const selectRfp = async (rfpId: string | number) => {
   const rfpIdStr = String(rfpId)
+  
+  // Stop polling before changing RFP
+  stopPolling()
+  
   currentRfpId.value = rfpIdStr
   
   // Update URL using Vue Router
@@ -726,9 +761,12 @@ const selectRfp = async (rfpId: string | number) => {
   await loadConsensusData()
   await loadNotifications()
   
-  // Restart polling with new RFP ID
-  stopPolling()
-  startPolling()
+  // Restart polling with new RFP ID (with a small delay to ensure previous polling is fully stopped)
+  setTimeout(() => {
+    if (currentRfpId.value === rfpIdStr) {
+      startPolling()
+    }
+  }, 500)
 }
 
 const loadRfpData = async (rfpId: string) => {
@@ -770,8 +808,17 @@ const loadConsensusData = async () => {
     
     const { fetchRFP, getAuthHeaders } = useRfpApi()
     
-    // Load RFP data
-    rfpData.value = await fetchRFP(rfpId)
+    // Load RFP data with error handling for connection issues
+    try {
+      rfpData.value = await fetchRFP(rfpId)
+    } catch (error) {
+      if (error.message && error.message.includes('Failed to fetch') || error.message && error.message.includes('ERR_CONNECTION_REFUSED')) {
+        console.warn('⚠️ Backend connection refused, skipping RFP data load')
+        // Don't throw error, continue with other data loading
+      } else {
+        throw error
+      }
+    }
     
     // Load committee members
     const committeeResponse = await fetch(`${API_BASE_URL}/rfp/${rfpId}/committee/get/`, {
@@ -793,11 +840,21 @@ const loadConsensusData = async () => {
       }
     }
     
-    // Load proposals
-    const proposalsResponse = await fetch(`${API_BASE_URL}/rfp-responses-list/?rfp_id=${rfpId}`, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    })
+    // Load proposals with error handling
+    let proposalsResponse
+    try {
+      proposalsResponse = await fetch(`${API_BASE_URL}/rfp-responses-list/?rfp_id=${rfpId}`, {
+        method: 'GET',
+        headers: getAuthHeaders()
+      })
+    } catch (fetchError) {
+      if (fetchError.message && (fetchError.message.includes('Failed to fetch') || fetchError.message.includes('ERR_CONNECTION_REFUSED'))) {
+        console.warn('⚠️ Backend connection refused, skipping proposals load')
+        return // Exit early if backend is not available
+      }
+      throw fetchError
+    }
+    
     if (proposalsResponse.ok) {
       const proposalsData = await proposalsResponse.json()
       if (proposalsData.success && proposalsData.responses) {
@@ -810,10 +867,11 @@ const loadConsensusData = async () => {
           response.response_id
         )
         
-        // Process proposals to ensure proper vendor names
+        // Process proposals to ensure proper vendor names and emails
         shortlistedProposals.value = shortlistedProposals.value.map((proposal, index) => {
           let vendorName = proposal.vendor_name
           let orgName = proposal.org
+          let vendorEmail = proposal.vendor_email || proposal.contact_email || proposal.email || ''
           
           if (proposal.response_documents) {
             try {
@@ -828,6 +886,10 @@ const loadConsensusData = async () => {
                 if (responseDocs.companyInfo.contactName) {
                   orgName = responseDocs.companyInfo.contactName
                 }
+                // Extract email from companyInfo
+                if (responseDocs.companyInfo.contactEmail && (!vendorEmail || vendorEmail === 'vendor@example.com')) {
+                  vendorEmail = responseDocs.companyInfo.contactEmail
+                }
               }
               
               if (responseDocs.vendor_name && !vendorName) {
@@ -835,6 +897,17 @@ const loadConsensusData = async () => {
               }
               if (responseDocs.company_name && !vendorName) {
                 vendorName = responseDocs.company_name
+              }
+              
+              // Extract email from response_documents
+              if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.contact_email) {
+                vendorEmail = responseDocs.contact_email
+              }
+              if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.contactEmail) {
+                vendorEmail = responseDocs.contactEmail
+              }
+              if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.email) {
+                vendorEmail = responseDocs.email
               }
             } catch (e) {
               console.log('Error parsing response_documents:', e)
@@ -845,6 +918,9 @@ const loadConsensusData = async () => {
             ...proposal,
             vendor_name: vendorName || `Vendor ${index + 1}`,
             org: orgName || 'Unknown Organization',
+            vendor_email: vendorEmail, // Store extracted email
+            contact_email: vendorEmail, // Also store as contact_email for compatibility
+            email: vendorEmail, // Also store as email for compatibility
             proposed_value: proposal.proposed_value ? parseFloat(proposal.proposed_value) : (100000 + (index * 50000)),
             technical_score: proposal.technical_score && proposal.technical_score !== '' ? parseFloat(proposal.technical_score) : (85 + (index * 5) + Math.floor(Math.random() * 10)),
             commercial_score: proposal.commercial_score && proposal.commercial_score !== '' ? parseFloat(proposal.commercial_score) : (80 + (index * 5) + Math.floor(Math.random() * 10)),
@@ -854,11 +930,22 @@ const loadConsensusData = async () => {
       }
     }
     
-    // Load committee evaluations
-    const evaluationsResponse = await fetch(`${API_BASE_URL}/rfp/${rfpId}/final-evaluations/`, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    })
+    // Load committee evaluations with error handling
+    let evaluationsResponse
+    try {
+      evaluationsResponse = await fetch(`${API_BASE_URL}/rfp/${rfpId}/final-evaluations/`, {
+        method: 'GET',
+        headers: getAuthHeaders()
+      })
+    } catch (fetchError) {
+      if (fetchError.message && (fetchError.message.includes('Failed to fetch') || fetchError.message.includes('ERR_CONNECTION_REFUSED'))) {
+        console.warn('⚠️ Backend connection refused, skipping evaluations load')
+        evaluationsResponse = { ok: false } // Set to failed response
+      } else {
+        throw fetchError
+      }
+    }
+    
     if (evaluationsResponse.ok) {
       const evaluationsData = await evaluationsResponse.json()
       if (evaluationsData.success && evaluationsData.evaluations) {
@@ -937,10 +1024,41 @@ const calculateConsensusRanking = () => {
           ? vendor.scores.reduce((sum, score) => sum + score, 0) / vendor.scores.length 
           : 0
         
+        // Find the original proposal to get email and other details
+        const originalProposal = shortlistedProposals.value.find(p => p.response_id === vendor.response_id)
+        
+        // Extract email from original proposal or try to extract from response_documents
+        let vendorEmail = originalProposal?.vendor_email || originalProposal?.contact_email || originalProposal?.email || ''
+        
+        // If email not found and we have response_documents, try to extract it
+        if ((!vendorEmail || vendorEmail === 'vendor@example.com') && originalProposal?.response_documents) {
+          try {
+            const responseDocs = typeof originalProposal.response_documents === 'string' 
+              ? JSON.parse(originalProposal.response_documents) 
+              : originalProposal.response_documents
+            
+            vendorEmail = responseDocs.companyInfo?.contactEmail || 
+                         responseDocs.companyInfo?.contact_email || 
+                         responseDocs.companyInfo?.email ||
+                         responseDocs.contact_email ||
+                         responseDocs.contactEmail ||
+                         responseDocs.email ||
+                         ''
+            vendorEmail = String(vendorEmail).trim()
+          } catch (e) {
+            console.warn('Error extracting email from response_documents in consensusRanking:', e)
+          }
+        }
+        
         return {
           response_id: vendor.response_id,
+          vendor_id: originalProposal?.vendor_id,
           vendor_name: vendor.vendor_name,
           org: vendor.org,
+          vendor_email: vendorEmail,
+          contact_email: vendorEmail,
+          email: vendorEmail,
+          response_documents: originalProposal?.response_documents,
           vote_count: vendor.vote_count,
           consensus_score: avgScore,
           min_score: Math.min(...vendor.scores),
@@ -953,8 +1071,13 @@ const calculateConsensusRanking = () => {
     consensusRanking.value = shortlistedProposals.value
       .map(proposal => ({
         response_id: proposal.response_id,
+        vendor_id: proposal.vendor_id,
         vendor_name: proposal.vendor_name,
         org: proposal.org,
+        vendor_email: proposal.vendor_email || proposal.contact_email || proposal.email || '',
+        contact_email: proposal.contact_email || proposal.vendor_email || proposal.email || '',
+        email: proposal.email || proposal.vendor_email || proposal.contact_email || '',
+        response_documents: proposal.response_documents,
         proposed_value: proposal.proposed_value,
         technical_score: proposal.technical_score,
         commercial_score: proposal.commercial_score,
@@ -972,10 +1095,21 @@ const loadNotifications = async () => {
   loadingNotifications.value = true
   try {
     const { getAuthHeaders } = useRfpApi()
-    const response = await fetch(`${API_BASE_URL}/rfp/${rfpId}/award-notification/`, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    })
+    let response
+    try {
+      response = await fetch(`${API_BASE_URL}/rfp/${rfpId}/award-notification/`, {
+        method: 'GET',
+        headers: getAuthHeaders()
+      })
+    } catch (fetchError) {
+      if (fetchError.message && (fetchError.message.includes('Failed to fetch') || fetchError.message.includes('ERR_CONNECTION_REFUSED'))) {
+        console.warn('⚠️ Backend connection refused, skipping notifications load')
+        awardNotifications.value = []
+        return
+      }
+      throw fetchError
+    }
+    
     if (response.ok) {
       const data = await response.json()
       if (data.success) {
@@ -1017,19 +1151,154 @@ const sendAwardNotification = async () => {
                          shortlistedProposals.value.find(v => v.response_id === selectedWinner.value)
   
   if (!selectedVendor) {
+    console.error('❌ [sendAwardNotification] Vendor not found:', {
+      selectedWinner: selectedWinner.value,
+      consensusRanking_count: consensusRanking.value.length,
+      shortlistedProposals_count: shortlistedProposals.value.length,
+      consensusRanking_ids: consensusRanking.value.map(v => v.response_id),
+      shortlistedProposals_ids: shortlistedProposals.value.map(v => v.response_id)
+    })
     PopupService.error('Vendor details not found', 'Vendor Not Found')
     return
   }
   
-  const vendorEmail = selectedVendor.vendor_email || 
-                     selectedVendor.contact_email || 
-                     selectedVendor.email || 
-                     ''
+  console.log('🔍 [sendAwardNotification] Selected vendor details:', {
+    response_id: selectedVendor.response_id,
+    vendor_id: selectedVendor.vendor_id,
+    vendor_name: selectedVendor.vendor_name,
+    org: selectedVendor.org,
+    vendor_email: selectedVendor.vendor_email,
+    contact_email: selectedVendor.contact_email,
+    email: selectedVendor.email,
+    has_response_documents: !!selectedVendor.response_documents,
+    full_vendor_object: selectedVendor
+  })
   
-  if (!vendorEmail || vendorEmail === 'vendor@example.com') {
-    PopupService.error('Vendor email not found. Please ensure the vendor has provided their contact email in the RFP response.', 'Email Not Found')
+  // Try multiple email locations - the backend now provides email in multiple fields
+  let vendorEmail = (selectedVendor.vendor_email || 
+                   selectedVendor.contact_email || 
+                   selectedVendor.email || 
+                   '').trim()
+  
+  console.log('🔍 [sendAwardNotification] Initial email check:', {
+    vendor_email: selectedVendor.vendor_email,
+    contact_email: selectedVendor.contact_email,
+    email: selectedVendor.email,
+    vendor_id: selectedVendor.vendor_id,
+    response_id: selectedVendor.response_id,
+    found_email: vendorEmail
+  })
+  
+  // If not found, try extracting from response_documents
+  if ((!vendorEmail || vendorEmail === 'vendor@example.com') && selectedVendor.response_documents) {
+    try {
+      const responseDocs = typeof selectedVendor.response_documents === 'string' 
+        ? JSON.parse(selectedVendor.response_documents) 
+        : selectedVendor.response_documents
+      
+      console.log('🔍 [sendAwardNotification] Checking response_documents for email:', {
+        has_companyInfo: !!responseDocs.companyInfo,
+        companyInfo_contactEmail: responseDocs.companyInfo?.contactEmail,
+        companyInfo_contact_email: responseDocs.companyInfo?.contact_email,
+        companyInfo_email: responseDocs.companyInfo?.email,
+        direct_contact_email: responseDocs.contact_email,
+        direct_contactEmail: responseDocs.contactEmail,
+        direct_email: responseDocs.email
+      })
+      
+      // Try companyInfo.contactEmail first
+      if (responseDocs.companyInfo && responseDocs.companyInfo.contactEmail) {
+        vendorEmail = String(responseDocs.companyInfo.contactEmail).trim()
+        console.log('✅ Found email in companyInfo.contactEmail:', vendorEmail)
+      }
+      // Try companyInfo.contact_email
+      if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.companyInfo && responseDocs.companyInfo.contact_email) {
+        vendorEmail = String(responseDocs.companyInfo.contact_email).trim()
+        console.log('✅ Found email in companyInfo.contact_email:', vendorEmail)
+      }
+      // Try companyInfo.email
+      if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.companyInfo && responseDocs.companyInfo.email) {
+        vendorEmail = String(responseDocs.companyInfo.email).trim()
+        console.log('✅ Found email in companyInfo.email:', vendorEmail)
+      }
+      // Try direct contact_email
+      if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.contact_email) {
+        vendorEmail = String(responseDocs.contact_email).trim()
+        console.log('✅ Found email in response_documents.contact_email:', vendorEmail)
+      }
+      // Try contactEmail
+      if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.contactEmail) {
+        vendorEmail = String(responseDocs.contactEmail).trim()
+        console.log('✅ Found email in response_documents.contactEmail:', vendorEmail)
+      }
+      // Try email
+      if ((!vendorEmail || vendorEmail === 'vendor@example.com') && responseDocs.email) {
+        vendorEmail = String(responseDocs.email).trim()
+        console.log('✅ Found email in response_documents.email:', vendorEmail)
+      }
+    } catch (e) {
+      console.error('❌ Error parsing response_documents for email:', e)
+    }
+  }
+  
+  // If still not found and vendor_id exists, try fetching from vendor_contacts table
+  if ((!vendorEmail || vendorEmail === 'vendor@example.com') && selectedVendor.vendor_id) {
+    console.log('🔍 [sendAwardNotification] Attempting to fetch email from vendor_contacts table for vendor_id:', selectedVendor.vendor_id)
+    try {
+      const { getAuthHeaders } = useRfpApi()
+      // Try both possible API endpoint paths
+      let contactResponse
+      try {
+        contactResponse = await fetch(`${API_BASE_URL}/vendors/${selectedVendor.vendor_id}/primary-contact/`, {
+          method: 'GET',
+          headers: getAuthHeaders()
+        })
+      } catch (fetchError) {
+        console.warn('⚠️ First vendor contact endpoint failed, trying alternative:', fetchError)
+        try {
+          contactResponse = await fetch(`http://localhost:8000/api/v1/rfps/vendors/${selectedVendor.vendor_id}/primary-contact/`, {
+            method: 'GET',
+            headers: getAuthHeaders()
+          })
+        } catch (altError) {
+          console.error('❌ Both vendor contact endpoints failed:', altError)
+          contactResponse = { ok: false }
+        }
+      }
+      
+      if (contactResponse && contactResponse.ok) {
+        const contactData = await contactResponse.json()
+        if (contactData.success && contactData.contact && contactData.contact.email && contactData.contact.email.trim()) {
+          vendorEmail = String(contactData.contact.email).trim()
+          console.log('✅ Found email from vendor_contacts table:', vendorEmail)
+        } else {
+          console.warn('⚠️ Vendor contact API returned but no email found:', contactData)
+        }
+      } else {
+        console.warn('⚠️ Vendor contact API request failed:', contactResponse?.status)
+      }
+    } catch (error) {
+      console.error('❌ Error fetching vendor contact:', error)
+    }
+  }
+  
+  // Final validation
+  if (!vendorEmail || vendorEmail === 'vendor@example.com' || !vendorEmail.trim() || !vendorEmail.includes('@')) {
+    console.error('❌ [sendAwardNotification] Email not found after all attempts:', {
+      vendor_id: selectedVendor.vendor_id,
+      response_id: selectedVendor.response_id,
+      vendor_name: selectedVendor.vendor_name,
+      has_response_documents: !!selectedVendor.response_documents,
+      final_email_attempt: vendorEmail
+    })
+    PopupService.error(
+      'Vendor email not found. Please ensure the vendor has provided their contact email in the RFP response or in the vendor profile.',
+      'Email Not Found'
+    )
     return
   }
+  
+  console.log('✅ [sendAwardNotification] Final email to use:', vendorEmail)
   
   const { getAuthHeaders } = useRfpApi()
   const payload = {
@@ -1559,24 +1828,62 @@ const goToDashboard = () => {
 
 const refreshData = async () => {
   console.log('🔄 Manual refresh triggered...')
-  await loadConsensusData()
-  await loadNotifications()
+  // Only refresh if we have an RFP ID
+  if (currentRfpId.value) {
+    await loadConsensusData()
+    await loadNotifications()
+    lastUpdated.value = new Date().toISOString()
+  }
 }
 
 const startPolling = () => {
-  if (pollingInterval.value) return
+  // Always stop existing polling before starting new one
+  stopPolling()
+  
+  // Double-check that polling is not already running
+  if (pollingInterval.value) {
+    console.warn('⚠️ Polling interval already exists, stopping it first')
+    stopPolling()
+  }
   
   console.log('🔄 Starting real-time polling...')
   isPolling.value = true
   
+  // Use a longer interval (10 seconds instead of 5) to reduce refresh frequency
   pollingInterval.value = setInterval(async () => {
     try {
-      await loadConsensusData()
-      await loadNotifications()
+      // Only poll if we have an RFP ID and component is still mounted
+      if (currentRfpId.value) {
+        try {
+          await loadConsensusData()
+        } catch (error) {
+          // Don't stop polling on connection errors, just log and continue
+          if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED'))) {
+            console.warn('⚠️ Backend unavailable during polling, will retry next interval')
+          } else {
+            console.error('Error during polling (loadConsensusData):', error)
+          }
+        }
+        
+        try {
+          await loadNotifications()
+        } catch (error) {
+          // Don't stop polling on connection errors, just log and continue
+          if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED'))) {
+            console.warn('⚠️ Backend unavailable during polling (notifications), will retry next interval')
+          } else {
+            console.error('Error during polling (loadNotifications):', error)
+          }
+        }
+      } else {
+        // If no RFP ID, stop polling
+        stopPolling()
+      }
     } catch (error) {
       console.error('Error during polling:', error)
+      // Don't stop polling on errors, just log them
     }
-  }, 5000)
+  }, 10000) // Increased from 5000ms to 10000ms (10 seconds)
 }
 
 const stopPolling = () => {
@@ -1586,6 +1893,8 @@ const stopPolling = () => {
     pollingInterval.value = null
     isPolling.value = false
   }
+  // Ensure isPolling is false even if interval was null
+  isPolling.value = false
 }
 
 const showNotification = (message) => {
@@ -1659,29 +1968,61 @@ const formatDate = (dateString) => {
 }
 
 // Watch for route query parameter changes
+let isUpdatingRfp = false // Flag to prevent multiple simultaneous updates
 watch(() => route.query.rfp_id, async (newRfpId, oldRfpId) => {
-  // If RFP ID was removed from URL, show selection interface
-  if (!newRfpId && oldRfpId && currentRfpId.value) {
-    console.log('🔄 RFP ID removed from URL, showing selection interface')
-    changeRfp()
+  // Prevent multiple simultaneous updates
+  if (isUpdatingRfp) {
+    console.log('⚠️ RFP update already in progress, skipping...')
     return
   }
   
-  // If RFP ID changed to a new value
-  if (newRfpId && newRfpId !== oldRfpId && newRfpId !== currentRfpId.value) {
-    console.log('🔄 RFP ID changed in URL:', newRfpId)
-    currentRfpId.value = String(newRfpId)
-    await loadRfpData(String(newRfpId))
-    await loadConsensusData()
-    await loadNotifications()
-    // Restart polling with new RFP ID
-    stopPolling()
-    startPolling()
+  // Prevent unnecessary updates if the value hasn't actually changed
+  if (String(newRfpId || '') === String(currentRfpId.value || '')) {
+    return
+  }
+  
+  isUpdatingRfp = true
+  
+  try {
+    // If RFP ID was removed from URL, show selection interface
+    if (!newRfpId && oldRfpId && currentRfpId.value) {
+      console.log('🔄 RFP ID removed from URL, showing selection interface')
+      stopPolling() // Stop polling before changing RFP
+      await changeRfp()
+      return
+    }
+    
+    // If RFP ID changed to a new value
+    if (newRfpId && newRfpId !== oldRfpId && newRfpId !== currentRfpId.value) {
+      console.log('🔄 RFP ID changed in URL:', newRfpId)
+      // Stop polling first
+      stopPolling()
+      
+      currentRfpId.value = String(newRfpId)
+      await loadRfpData(String(newRfpId))
+      await loadConsensusData()
+      await loadNotifications()
+      
+      // Restart polling with new RFP ID (with a delay to ensure previous polling is fully stopped)
+      setTimeout(() => {
+        if (currentRfpId.value === String(newRfpId) && !pollingInterval.value) {
+          startPolling()
+        }
+      }, 1000)
+    }
+  } finally {
+    isUpdatingRfp = false
   }
 }, { immediate: false })
 
 // Initialize component
 const initializeComponent = async () => {
+  // Prevent multiple initializations
+  if (pollingInterval.value) {
+    console.log('⚠️ Component already initialized, skipping...')
+    return
+  }
+  
   await loggingService.logPageView('RFP', 'Phase 8 & 9 - Consensus & Award')
   
   // Check for RFP ID in route query params first (Vue Router)
@@ -1700,7 +2041,12 @@ const initializeComponent = async () => {
     await loadRfpData(String(rfpId))
     await loadConsensusData()
     await loadNotifications()
-    startPolling()
+    // Start polling only once after all data is loaded
+    setTimeout(() => {
+      if (currentRfpId.value === String(rfpId) && !pollingInterval.value) {
+        startPolling()
+      }
+    }, 1000)
   } else {
     // No RFP ID in URL - always show selection interface
     // Clear any existing RFP ID and ensure URL is clean
@@ -1726,11 +2072,20 @@ const initializeComponent = async () => {
 }
 
 onMounted(async () => {
-  await initializeComponent()
+  // Only initialize once
+  if (!pollingInterval.value && !currentRfpId.value) {
+    await initializeComponent()
+  }
 })
 
 onUnmounted(() => {
   stopPolling()
+  // Clear any pending timeouts
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value)
+    pollingInterval.value = null
+  }
+  isPolling.value = false
 })
 </script>
 

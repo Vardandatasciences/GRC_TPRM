@@ -20,9 +20,58 @@ class APIService {
     this.riskAnalysisURL = RISK_ANALYSIS_API_URL;
   }
 
+  // Helper to get token from any of the storage keys (compatible with GRC auth)
+  getStoredToken() {
+    const keys = ['access_token', 'session_token', 'token', 'jwt_token'];
+    for (const key of keys) {
+      const val = localStorage.getItem(key);
+      if (val) return val;
+    }
+    return null;
+  }
+
+  // Helper to refresh token if needed
+  async refreshTokenIfNeeded() {
+    try {
+      const refreshToken = localStorage.getItem('refresh_token');
+      if (!refreshToken) {
+        return false;
+      }
+      
+      const refreshResponse = await fetch('http://localhost:8000/api/jwt/refresh/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      });
+      
+      if (refreshResponse.ok) {
+        const refreshData = await refreshResponse.json();
+        if (refreshData.status === 'success') {
+          localStorage.setItem('access_token', refreshData.access_token);
+          if (refreshData.refresh_token) {
+            localStorage.setItem('refresh_token', refreshData.refresh_token);
+          }
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      return false;
+    }
+  }
+
   async request(endpoint, options = {}) {
     const url = `${this.baseURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    let token = this.getStoredToken();
+    
+    // If no token, try to refresh
+    if (!token) {
+      await this.refreshTokenIfNeeded();
+      token = this.getStoredToken();
+    }
+    
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -33,16 +82,27 @@ class APIService {
     };
 
     try {
-      const response = await fetch(url, config);
+      let response = await fetch(url, config);
+      
+      // Handle 401 errors - try to refresh token and retry
+      if (response.status === 401 && !options._retry) {
+        console.log('🔄 [APIService] 401 error detected, attempting token refresh...');
+        const refreshSuccess = await this.refreshTokenIfNeeded();
+        
+        if (refreshSuccess) {
+          // Retry with new token
+          const newToken = this.getStoredToken();
+          if (newToken) {
+            config.headers['Authorization'] = `Bearer ${newToken}`;
+            config._retry = true;
+            response = await fetch(url, config);
+          }
+        }
+      }
       
       if (!response.ok) {
-        // 401 = Unauthorized (invalid/missing token) → redirect to login
+        // 401 = Unauthorized (invalid/missing token) → don't redirect, just throw error
         if (response.status === 401) {
-          localStorage.removeItem('session_token');
-          localStorage.removeItem('current_user');
-          if (window.location.pathname !== '/login') {
-            window.location.href = '/login';
-          }
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         
@@ -57,6 +117,13 @@ class APIService {
           throw error;
         }
         
+        // For 500 errors, try to get more details
+        if (response.status === 500) {
+          const errorData = await response.json().catch(() => ({}));
+          const errorMessage = errorData.error || errorData.message || errorData.detail || 'Internal server error';
+          throw new Error(`HTTP error! status: ${response.status} - ${errorMessage}`);
+        }
+        
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
@@ -69,7 +136,7 @@ class APIService {
 
   async slaRequest(endpoint, options = {}) {
     const url = `${this.slaURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -117,7 +184,7 @@ class APIService {
   async auditsRequest(endpoint, options = {}) {
     const { allow404 = false, ...fetchOptions } = options;
     const url = `${this.auditsURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -170,7 +237,7 @@ class APIService {
 
   async notificationsRequest(endpoint, options = {}) {
     const url = `${this.notificationsURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -923,7 +990,7 @@ class APIService {
     // Tag uploads so they can be filtered on the backend
     formData.append('platform', 'audit-execution');
 
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const response = await fetch(`${this.rfpURL}/s3/upload/`, {
       method: 'POST',
       headers: {
@@ -945,7 +1012,7 @@ class APIService {
       throw new Error('Missing document identifier');
     }
 
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const response = await fetch(`${this.rfpURL}/s3-files/${documentId}/`, {
       headers: {
         ...(token && { 'Authorization': `Bearer ${token}` })
@@ -1078,7 +1145,7 @@ class APIService {
   // BCP/DRP API methods
   async bcpdrpRequest(endpoint, options = {}) {
     const url = `${this.bcpdrpURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -1148,7 +1215,7 @@ class APIService {
 
   async riskAnalysisRequest(endpoint, options = {}) {
     const url = `${this.riskAnalysisURL}${endpoint}`;
-    const token = localStorage.getItem('session_token');
+    const token = this.getStoredToken();
     const config = {
       headers: {
         'Content-Type': 'application/json',
@@ -1539,38 +1606,88 @@ export const api = axios.create({
   },
 })
 
+// Helper function for axios interceptor (outside class)
+function getStoredTokenForAxios() {
+  const keys = ['access_token', 'session_token', 'token', 'jwt_token'];
+  for (const key of keys) {
+    const val = localStorage.getItem(key);
+    if (val) return val;
+  }
+  return null;
+}
+
 // Add request interceptor to inject JWT token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('session_token')
+    const token = getStoredTokenForAxios();
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+      config.headers.Authorization = `Bearer ${token}`;
     }
-    return config
+    return config;
   },
   (error) => {
-    return Promise.reject(error)
+    return Promise.reject(error);
   }
-)
+);
 
 // Add response interceptor to handle authentication and permission errors
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      console.warn('⚠️ API 401 Unauthorized')
-      // Token expired or invalid
-      localStorage.removeItem('session_token')
-      localStorage.removeItem('current_user')
+  async (error) => {
+    const originalRequest = error.config;
+    
+    // Handle 401 errors - try to refresh token and retry
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      console.log('🔄 [Axios Interceptor] 401 error detected, attempting token refresh...');
+      originalRequest._retry = true;
+      
+      try {
+        const refreshToken = localStorage.getItem('refresh_token');
+        if (refreshToken) {
+          const refreshResponse = await fetch('http://localhost:8000/api/jwt/refresh/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ refresh_token: refreshToken })
+          });
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json();
+            if (refreshData.status === 'success') {
+              localStorage.setItem('access_token', refreshData.access_token);
+              if (refreshData.refresh_token) {
+                localStorage.setItem('refresh_token', refreshData.refresh_token);
+              }
+              
+              // Retry the original request with new token
+              const newToken = getStoredTokenForAxios();
+              if (newToken) {
+                originalRequest.headers.Authorization = `Bearer ${newToken}`;
+                return api(originalRequest);
+              }
+            }
+          }
+        }
+      } catch (refreshError) {
+        console.error('❌ Token refresh failed in axios interceptor:', refreshError);
+      }
+      
+      // If refresh failed, remove tokens and redirect to login
+      console.warn('⚠️ API 401 Unauthorized - refresh failed');
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('session_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('current_user');
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+        window.location.href = '/login';
       }
     } else if (error.response?.status === 403) {
       // Permission denied - RBAC check failed
-      const errorMessage = error.response?.data?.error || error.response?.data?.message || 'You do not have permission to access this resource.'
-      const errorCode = error.response?.data?.code || '403'
+      const errorMessage = error.response?.data?.error || error.response?.data?.message || 'You do not have permission to access this resource.';
+      const errorCode = error.response?.data?.code || '403';
       
-      console.warn('⚠️ API 403 Forbidden:', errorMessage)
+      console.warn('⚠️ API 403 Forbidden:', errorMessage);
       
       // Store error info but don't redirect automatically - let components handle it
       sessionStorage.setItem('access_denied_error', JSON.stringify({
@@ -1579,17 +1696,17 @@ api.interceptors.response.use(
         timestamp: new Date().toISOString(),
         path: window.location.pathname,
         url: error.config?.url
-      }))
+      }));
       
       // Attach more detailed error info to the error object
-      error.permissionDenied = true
-      error.permissionError = errorMessage
+      error.permissionDenied = true;
+      error.permissionError = errorMessage;
       
       // Only redirect if this is a critical permission error (not just a missing resource)
       // Let individual components decide how to handle 403 errors
     }
-    return Promise.reject(error)
+    return Promise.reject(error);
   }
-)
+);
 
 export default apiService;

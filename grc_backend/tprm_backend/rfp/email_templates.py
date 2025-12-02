@@ -20,8 +20,8 @@ def generate_rich_html_email(invitation, rfp_data):
     acknowledgment_url = invitation.get('acknowledgment_url', invitation_url)
     decline_url = invitation.get('decline_url', f"{invitation_url}?action=decline")
     
-    # Get the external base URL for proper links
-    external_base_url = settings.EXTERNAL_BASE_URL
+    # Get the external base URL for proper links with fallback
+    external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
     
     return f"""
 <!DOCTYPE html>

@@ -484,6 +484,7 @@
   display: flex !important;
   flex-direction: column !important;
   overflow: hidden !important;
+  margin-left: 250px !important;
 }
 
 .modal-header {
@@ -1321,6 +1322,7 @@
   .modal-content {
     max-width: 95vw !important;
     max-height: 95vh !important;
+    margin-left: 0 !important;
   }
   
   .details-grid {

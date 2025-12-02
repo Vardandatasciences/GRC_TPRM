@@ -105,14 +105,6 @@
             <Button 
               variant="outline" 
               class="w-full justify-start text-sm"
-              @click="navigateToReview"
-            >
-              <CheckCircle class="mr-2 h-4 w-4" />
-              Review Queue
-            </Button>
-            <Button 
-              variant="outline" 
-              class="w-full justify-start text-sm"
               @click="navigateToReports"
             >
               <BarChart3 class="mr-2 h-4 w-4" />
@@ -229,7 +221,6 @@ const formatDate = (dateString) => {
 
 const navigateToCreate = () => router.push('/audit/create')
 const navigateToMyAudits = () => router.push('/audit/all')
-const navigateToReview = () => router.push('/audit/review')
 const navigateToReports = () => router.push('/audit/reports')
 const navigateToAudit = (auditId) => router.push(`/audit/${auditId}`)
 </script>

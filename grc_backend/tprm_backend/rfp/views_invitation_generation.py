@@ -38,7 +38,9 @@ def generate_invitations_new_format(request):
     Generate invitations using the new URI method with query parameters
     """
     try:
-        data = json.loads(request.body)
+        # Use request.data (DRF) instead of request.body to avoid RawPostDataException
+        # Since we're using @api_view, request.data is automatically parsed
+        data = request.data if hasattr(request, 'data') else json.loads(request.body)
         rfp_id = data.get('rfpId')
         vendors = data.get('vendors', [])
         custom_message = data.get('customMessage', '')
@@ -76,7 +78,9 @@ def generate_invitations_new_format(request):
                 print(f'[DEBUG] Processing vendor_data: {vendor_data}')
                 # Generate new-style URL with query parameters
                 from django.conf import settings
-                base_url = f"{settings.EXTERNAL_BASE_URL}/submit"
+                # Get EXTERNAL_BASE_URL with fallback to localhost:3000
+                external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
+                base_url = f"{external_base_url}/submit"
                 
                 # Prepare parameters
                 vendor_id = vendor_data.get('vendor_id')
@@ -85,12 +89,28 @@ def generate_invitations_new_format(request):
                 contact_data = None
                 if vendor_id:
                     with connection.cursor() as cursor:
-                        cursor.execute('''
-                            SELECT first_name, last_name, email, phone, mobile
-                            FROM vendor_contacts
-                            WHERE vendor_id = %s AND contact_type = 'PRIMARY' AND is_primary = 1 AND is_active = 1
-                            LIMIT 1
-                        ''', [vendor_id])
+                        try:
+                            # Try with tprm_integration schema first
+                            cursor.execute('''
+                                SELECT first_name, last_name, email, phone, mobile
+                                FROM tprm_integration.vendor_contacts
+                                WHERE vendor_id = %s 
+                                AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1')
+                                AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                                ORDER BY is_primary DESC, contact_id ASC
+                                LIMIT 1
+                            ''', [vendor_id])
+                        except Exception:
+                            # Fallback: try without schema prefix
+                            cursor.execute('''
+                                SELECT first_name, last_name, email, phone, mobile
+                                FROM vendor_contacts
+                                WHERE vendor_id = %s 
+                                AND (contact_type = 'PRIMARY' OR is_primary = 1 OR is_primary = '1')
+                                AND (is_active = 1 OR is_active = '1' OR is_active = 'Y' OR is_active IS NULL)
+                                ORDER BY is_primary DESC, contact_id ASC
+                                LIMIT 1
+                            ''', [vendor_id])
                         contact = cursor.fetchone()
                         if contact:
                             contact_data = {
@@ -191,10 +211,66 @@ def generate_invitations_new_format(request):
                     'is_matched_vendor': invitation.is_matched_vendor
                 })
         
+        # Send invitation emails immediately after generation
+        print(f'[EMAIL] Sending invitation emails for {len(created_invitations)} invitations')
+        sent_count = 0
+        failed_count = 0
+        
+        for invitation_data in created_invitations:
+            try:
+                # Get the invitation object
+                invitation_obj = VendorInvitation.objects.get(invitation_id=invitation_data['invitation_id'])
+                
+                # Generate email content
+                rfp_data = {
+                    'rfp_title': rfp.rfp_title,
+                    'rfp_number': rfp.rfp_number,
+                    'description': rfp.description,
+                    'submission_deadline': rfp.submission_deadline.isoformat() if rfp.submission_deadline else None
+                }
+                
+                email_body = generate_rich_html_email(invitation_data, rfp_data)
+                email_subject = f"RFP Invitation: {rfp.rfp_title}"
+                
+                # Send email
+                from django.core.mail import EmailMessage
+                from django.conf import settings
+                
+                email_message = EmailMessage(
+                    subject=email_subject,
+                    body=email_body,
+                    from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+                    to=[invitation_data['vendor_email']],
+                )
+                email_message.content_subtype = "html"
+                
+                # Send the email
+                result = email_message.send()
+                
+                if result:
+                    # Update invitation status to SENT
+                    invitation_obj.invitation_status = 'SENT'
+                    invitation_obj.invited_date = timezone.now()
+                    invitation_obj.save()
+                    sent_count += 1
+                    print(f'[SUCCESS] Email sent successfully to {invitation_data["vendor_email"]}')
+                else:
+                    failed_count += 1
+                    print(f'[WARNING] Email send returned False for {invitation_data["vendor_email"]}')
+                    
+            except Exception as email_error:
+                failed_count += 1
+                print(f'[ERROR] Failed to send email to {invitation_data.get("vendor_email", "unknown")}: {str(email_error)}')
+                import traceback
+                print(f'[ERROR] Traceback: {traceback.format_exc()}')
+                continue
+        
         return JsonResponse({
             'success': True,
-            'message': f'Generated {len(created_invitations)} invitation(s) successfully',
-            'invitations': created_invitations
+            'message': f'Generated {len(created_invitations)} invitation(s) and sent {sent_count} email(s) successfully',
+            'invitations': created_invitations,
+            'emails_sent': sent_count,
+            'emails_failed': failed_count
         })
         
     except json.JSONDecodeError as e:
@@ -224,7 +300,8 @@ def generate_open_rfp_invitation(request):
     Generate invitation for open RFP (no specific vendor)
     """
     try:
-        data = json.loads(request.body)
+        # Use request.data (DRF) instead of request.body to avoid RawPostDataException
+        data = request.data if hasattr(request, 'data') else json.loads(request.body)
         rfp_id = data.get('rfpId')
         
         if not rfp_id:
@@ -244,7 +321,8 @@ def generate_open_rfp_invitation(request):
         
         # Generate open RFP URL
         from django.conf import settings
-        base_url = f"{settings.EXTERNAL_BASE_URL}/submit/open"
+        external_base_url = getattr(settings, 'EXTERNAL_BASE_URL', 'http://localhost:3000')
+        base_url = f"{external_base_url}/submit/open"
         params = {
             'rfpId': str(rfp_id)
         }
@@ -348,7 +426,8 @@ def send_invitation_emails(request):
     Send invitation emails to vendors
     """
     try:
-        data = json.loads(request.body)
+        # Use request.data (DRF) instead of request.body to avoid RawPostDataException
+        data = request.data if hasattr(request, 'data') else json.loads(request.body)
         invitations = data.get('invitations', [])
         rfp_data = data.get('rfpData', {})
         

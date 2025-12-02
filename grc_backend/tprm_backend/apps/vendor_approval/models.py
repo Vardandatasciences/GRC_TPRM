@@ -118,6 +118,8 @@ class ApprovalStages(VendorBaseModel):
     stage_id = models.CharField(max_length=50, primary_key=True)
     approval = models.ForeignKey(ApprovalRequests, models.DO_NOTHING, db_column='approval_id', blank=True, null=True)
     stage_order = models.IntegerField()
+    # New optional weightage column used primarily for MULTI_PERSON / response approval workflows
+    weightage = models.IntegerField(blank=True, null=True, db_column='weightage')
     stage_name = models.CharField(max_length=255)
     stage_description = models.TextField(blank=True, null=True)
     assigned_user_id = models.ForeignKey(Users, models.DO_NOTHING, db_column='assigned_user_id', blank=True, null=True)

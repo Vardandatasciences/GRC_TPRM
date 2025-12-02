@@ -2349,6 +2349,16 @@ const fetchVendors = async () => {
   }
 }
 
+// Helper function to get stored token (compatible with GRC auth)
+const getStoredToken = () => {
+  const keys = ['access_token', 'session_token', 'token', 'jwt_token']
+  for (const key of keys) {
+    const val = localStorage.getItem(key)
+    if (val) return val
+  }
+  return null
+}
+
 const handleFileUpload = async (event) => {
   console.log('📁 Subcontract file upload triggered:', event)
   
@@ -2395,6 +2405,12 @@ const handleFileUpload = async (event) => {
     // Hint backend to run only contract extraction
     uploadFormData.append('mode', 'contract_only')
     
+    // Get authentication token
+    const token = getStoredToken()
+    if (!token) {
+      throw new Error('Authentication required. Please log in to upload files.')
+    }
+    
     console.log('📤 Uploading subcontract file to OCR service...')
     
     // Simulate progress updates
@@ -2404,22 +2420,79 @@ const handleFileUpload = async (event) => {
       }
         }, 500)
     
-    // Call the OCR API endpoint
+    // Call the OCR API endpoint with authentication
+    // Note: Don't set Content-Type header - browser will set it with boundary for FormData
+    const headers = {
+      'Authorization': `Bearer ${token}`
+    }
+    
     const response = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
       method: 'POST',
+      headers: headers,
       body: uploadFormData,
-      // Don't set Content-Type header - browser will set it with boundary for FormData
     })
     
     clearInterval(progressInterval)
-    uploadProgress.value = 100
     
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
+    // Handle 401 errors - try to refresh token and retry
+    let finalResponse = response
+    if (response.status === 401) {
+      console.log('🔄 401 error detected, attempting token refresh...')
+      
+      try {
+        // Try to refresh token
+        const refreshToken = localStorage.getItem('refresh_token')
+        if (refreshToken) {
+          const refreshResponse = await fetch('http://localhost:8000/api/jwt/refresh/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ refresh_token: refreshToken })
+          })
+          
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json()
+            if (refreshData.status === 'success') {
+              // Update tokens
+              localStorage.setItem('access_token', refreshData.access_token)
+              if (refreshData.refresh_token) {
+                localStorage.setItem('refresh_token', refreshData.refresh_token)
+              }
+              
+              // Retry the upload with new token
+              console.log('✅ Token refreshed, retrying OCR upload...')
+              const newToken = getStoredToken()
+              const retryHeaders = {
+                'Authorization': `Bearer ${newToken}`
+              }
+              
+              finalResponse = await fetch('http://localhost:8000/api/tprm/ocr/upload/', {
+                method: 'POST',
+                headers: retryHeaders,
+                body: uploadFormData,
+              })
+            }
+          }
+        }
+      } catch (refreshError) {
+        console.error('❌ Token refresh failed:', refreshError)
+        // Continue to error handling below
+      }
     }
     
-    const result = await response.json()
+    uploadProgress.value = 100
+    
+    if (!finalResponse.ok) {
+      const errorData = await finalResponse.json().catch(() => ({ error: 'Unknown error' }))
+      const errorMessage = errorData.error || `HTTP ${finalResponse.status}: ${finalResponse.statusText}`
+      if (finalResponse.status === 401) {
+        throw new Error('Authentication required. Please log in again.')
+      }
+      throw new Error(errorMessage)
+    }
+    
+    const result = await finalResponse.json()
     console.log('✅ OCR processing completed:', result)
     
     // Handle S3 upload information
@@ -3819,9 +3892,55 @@ onMounted(async () => {
     console.log('🔧 Set parent_contract_id from route:', parentContractId)
   }
   
-  // Fetch vendors list for dropdown
-  await fetchVendors()
+  // Load critical data in parallel for faster page load
+  // This allows the page to render immediately while data loads
+  const criticalDataPromises = [
+    fetchVendors().catch(err => {
+      console.error('❌ Error fetching vendors:', err)
+      availableVendors.value = []
+    }),
+    loadMainContractData().catch(err => {
+      console.error('❌ Error loading main contract data:', err)
+    })
+  ]
   
+  // Start loading critical data (don't await yet - let page render)
+  Promise.all(criticalDataPromises).then(() => {
+    console.log('✅ Critical data loaded')
+  })
+  
+  // Load non-critical data in background (users, legal reviewers)
+  // These are only needed when user switches to stakeholders tab
+  Promise.all([
+    contractsApi.getUsers().then(response => {
+      if (response.success) {
+        users.value = response.data
+        console.log('✅ Users loaded:', users.value.length, 'users')
+      } else {
+        console.warn('⚠️ Failed to load users:', response.message)
+        users.value = []
+      }
+    }).catch(error => {
+      console.error('❌ Error fetching users:', error)
+      users.value = []
+    }),
+    contractsApi.getLegalReviewers().then(response => {
+      if (response.success) {
+        legalReviewers.value = response.data
+        console.log('✅ Legal reviewers loaded:', legalReviewers.value.length, 'reviewers')
+      } else {
+        console.warn('⚠️ Failed to load legal reviewers:', response.message)
+        legalReviewers.value = []
+      }
+    }).catch(error => {
+      console.error('❌ Error fetching legal reviewers:', error)
+      legalReviewers.value = []
+    })
+  ]).then(() => {
+    console.log('✅ Background data loaded (users, legal reviewers)')
+  })
+  
+  // Handle template restoration (only if returning from templates)
   const returningFromTemplates = route.query.from === 'questionnaire-templates'
   const subcontractDraftDataRaw = sessionStorage.getItem('subcontract_draft_data')
   if (returningFromTemplates && subcontractDraftDataRaw) {
@@ -3855,12 +3974,18 @@ onMounted(async () => {
       selectedTemplates.value = { ...selectedTemplates.value }
       allTermTemplates.value = [...allTermTemplates.value]
 
-      await loadTermQuestionnaires()
-      for (const term of contractTerms.value) {
-        if (term?.term_category && term?.term_id) {
-          await loadTemplatesForTerm(term)
-        }
-      }
+      // Load questionnaires and templates in background (non-blocking)
+      loadTermQuestionnaires().then(() => {
+        // Load templates for each term in parallel
+        const templatePromises = contractTerms.value
+          .filter(term => term?.term_category && term?.term_id)
+          .map(term => loadTemplatesForTerm(term).catch(err => {
+            console.error(`❌ Error loading templates for term ${term.term_id}:`, err)
+          }))
+        return Promise.all(templatePromises)
+      }).catch(err => {
+        console.error('❌ Error loading term questionnaires:', err)
+      })
     } catch (error) {
       console.error('❌ Error restoring subcontract draft data from templates:', error)
     } finally {
@@ -3869,40 +3994,6 @@ onMounted(async () => {
   } else if (subcontractDraftDataRaw) {
     sessionStorage.removeItem('subcontract_draft_data')
   }
-
-  // Fetch users and legal reviewers for stakeholders tab
-  try {
-    console.log('📋 Fetching users and legal reviewers...')
-    
-    // Fetch all data in parallel for better performance
-    const [usersResponse, legalReviewersResponse] = await Promise.all([
-      contractsApi.getUsers(),
-      contractsApi.getLegalReviewers()
-    ])
-    
-    if (usersResponse.success) {
-      users.value = usersResponse.data
-      console.log('✅ Users loaded:', users.value.length, 'users')
-    } else {
-      console.warn('⚠️ Failed to load users:', usersResponse.message)
-      users.value = []
-    }
-    
-    if (legalReviewersResponse.success) {
-      legalReviewers.value = legalReviewersResponse.data
-      console.log('✅ Legal reviewers loaded:', legalReviewers.value.length, 'reviewers')
-    } else {
-      console.warn('⚠️ Failed to load legal reviewers:', legalReviewersResponse.message)
-      legalReviewers.value = []
-    }
-  } catch (error) {
-    console.error('❌ Error fetching users/legal reviewers:', error)
-    users.value = []
-    legalReviewers.value = []
-  }
-  
-  // Load main contract data first
-  await loadMainContractData()
   
   // Check if we're returning from preview page and restore form data
   // Only restore if we're explicitly returning from preview (not creating a new subcontract)
@@ -3913,132 +4004,78 @@ onMounted(async () => {
   console.log('🔍 Is returning from preview:', isReturningFromPreview)
   console.log('🔍 Route query:', route.query)
   
+  // Restore preview data in background (non-blocking) after critical data loads
   if (previewData && isReturningFromPreview) {
-    try {
-      const parsedData = JSON.parse(previewData)
-      console.log('🔄 Restoring subcontract form data from preview:', parsedData)
-      
-      // Restore form data
-      if (parsedData.formData) {
-        console.log('🔍 Original form data before restoration:', formData.value)
-        console.log('🔍 Preview data to restore:', parsedData.formData)
-        
-        // Restore each field individually to ensure reactivity
-        const subcontractData = parsedData.formData
-        Object.keys(subcontractData).forEach(key => {
-          if (subcontractData[key] !== undefined && subcontractData[key] !== null) {
-            formData.value[key] = subcontractData[key]
-            console.log(`✅ Restored ${key}:`, subcontractData[key])
+    // Wait for critical data, then restore preview data
+    Promise.all(criticalDataPromises).then(() => {
+      // Restore preview data after critical data is loaded
+      try {
+        const parsedData = JSON.parse(previewData)
+        console.log('🔄 Restoring subcontract form data from preview:', parsedData)
+          
+          // Restore form data
+          if (parsedData.formData) {
+            console.log('🔍 Original form data before restoration:', formData.value)
+            console.log('🔍 Preview data to restore:', parsedData.formData)
+            
+            // Restore each field individually to ensure reactivity
+            const subcontractData = parsedData.formData
+            Object.keys(subcontractData).forEach(key => {
+              if (subcontractData[key] !== undefined && subcontractData[key] !== null) {
+                formData.value[key] = subcontractData[key]
+                console.log(`✅ Restored ${key}:`, subcontractData[key])
+              }
+            })
+            
+            console.log('✅ Form data restored:', formData.value)
+            
+            // Force reactivity update by creating a completely new reactive object
+            const newFormData = { ...formData.value }
+            formData.value = newFormData
+            console.log('🔄 Form data after reactivity update:', formData.value)
+            
+            // Force a DOM update by using nextTick
+            nextTick().then(() => {
+              console.log('🔄 DOM should be updated now')
+              
+              // Force form re-render by updating the key
+              formKey.value++
+              console.log('🔄 Form key updated to force re-render:', formKey.value)
+            })
           }
-        })
-        
-        console.log('✅ Form data restored:', formData.value)
-        
-        // Force reactivity update by creating a completely new reactive object
-        const newFormData = { ...formData.value }
-        formData.value = newFormData
-        console.log('🔄 Form data after reactivity update:', formData.value)
-        
-        // Force a DOM update by using nextTick
-        await nextTick()
-        console.log('🔄 DOM should be updated now')
-        
-        // Force form re-render by updating the key
-        formKey.value++
-        console.log('🔄 Form key updated to force re-render:', formKey.value)
-        
-        // Force update all form fields by triggering input events
-        setTimeout(() => {
-          // List of all form field IDs that need to be updated
-          const formFields = [
-            'title', 'contract_number', 'value', 'liability_cap', 'start_date', 'end_date',
-            'notice_period_days', 'governing_law', 'description'
-          ]
           
-          // Update each form field
-          formFields.forEach(fieldId => {
-            const input = document.getElementById(fieldId)
-            if (input && formData.value[fieldId] !== undefined && formData.value[fieldId] !== null) {
-              input.value = formData.value[fieldId] || ''
-              input.dispatchEvent(new Event('input', { bubbles: true }))
-              console.log(`🔧 Manually set ${fieldId} input value:`, input.value)
-            }
-          })
+          // Restore contract terms - ensure each term is reactive
+          if (parsedData.contractTerms && Array.isArray(parsedData.contractTerms)) {
+            contractTerms.value = parsedData.contractTerms.map(term => reactive({ ...term }))
+            console.log('✅ Contract terms restored:', contractTerms.value)
+            console.log('✅ Contract terms count:', contractTerms.value.length)
+          }
           
-          // Update textarea fields
-          const textareaFields = ['description', 'renewal_terms']
-          textareaFields.forEach(fieldId => {
-            const textarea = document.getElementById(fieldId)
-            if (textarea && formData.value[fieldId] !== undefined && formData.value[fieldId] !== null) {
-              textarea.value = formData.value[fieldId] || ''
-              textarea.dispatchEvent(new Event('input', { bubbles: true }))
-              console.log(`🔧 Manually set ${fieldId} textarea value:`, textarea.value)
-            }
-          })
+          // Restore contract clauses - ensure each clause is reactive
+          if (parsedData.contractClauses && Array.isArray(parsedData.contractClauses)) {
+            contractClauses.value = parsedData.contractClauses.map(clause => reactive({ ...clause }))
+            console.log('✅ Contract clauses restored:', contractClauses.value)
+            console.log('✅ Contract clauses count:', contractClauses.value.length)
+          }
           
-          console.log('🔍 Form field values after restoration:')
-          console.log('  - title:', formData.value.title)
-          console.log('  - contract_number:', formData.value.contract_number)
-          console.log('  - value:', formData.value.value)
-          console.log('  - start_date:', formData.value.start_date)
-          console.log('  - end_date:', formData.value.end_date)
-        }, 200)
-      }
-      
-      // Restore contract terms - ensure each term is reactive
-      if (parsedData.contractTerms && Array.isArray(parsedData.contractTerms)) {
-        contractTerms.value = parsedData.contractTerms.map(term => reactive({ ...term })) // Make each term reactive
-        console.log('✅ Contract terms restored:', contractTerms.value)
-        console.log('✅ Contract terms count:', contractTerms.value.length)
-        console.log('✅ First term details:', contractTerms.value[0])
-        } else {
-        console.log('⚠️ No contract terms found in preview data')
-      }
-      
-      // Restore contract clauses - ensure each clause is reactive
-      if (parsedData.contractClauses && Array.isArray(parsedData.contractClauses)) {
-        contractClauses.value = parsedData.contractClauses.map(clause => reactive({ ...clause })) // Make each clause reactive
-        console.log('✅ Contract clauses restored:', contractClauses.value)
-        console.log('✅ Contract clauses count:', contractClauses.value.length)
-        console.log('✅ First clause details:', contractClauses.value[0])
-      } else {
-        console.log('⚠️ No contract clauses found in preview data')
-      }
-      
-      // Force reactivity update for terms and clauses
-      contractTerms.value = [...contractTerms.value]
-      contractClauses.value = [...contractClauses.value]
-      
-      // Force form re-render to ensure terms and clauses are displayed
-      formKey.value++
-      console.log('🔄 Form key updated after terms/clauses restoration:', formKey.value)
-      
-      // Ensure the form is properly rendered by waiting for next tick
-        await nextTick()
-      console.log('🔄 DOM updated after terms/clauses restoration')
-      
-      // Additional debugging to verify the data is properly set
-      console.log('🔍 After restoration - contractTerms.value:', contractTerms.value)
-      console.log('🔍 After restoration - contractClauses.value:', contractClauses.value)
-      console.log('🔍 After restoration - contractTerms.length:', contractTerms.value.length)
-      console.log('🔍 After restoration - contractClauses.length:', contractClauses.value.length)
-      
-      // Force another reactivity update after nextTick
-        setTimeout(() => {
-        contractTerms.value = [...contractTerms.value]
-        contractClauses.value = [...contractClauses.value]
-        console.log('🔄 Final reactivity update completed')
-        }, 100)
-      
-      // Clear the preview data from session storage
-      sessionStorage.removeItem('subcontractPreviewData')
-      
-      console.log('✅ All subcontract form data restored successfully')
-      console.log('🔍 Final contractTerms length:', contractTerms.value.length)
-      console.log('🔍 Final contractClauses length:', contractClauses.value.length)
-    } catch (error) {
-      console.error('Error restoring subcontract form data from preview:', error)
-    }
+          // Force reactivity update for terms and clauses
+          contractTerms.value = [...contractTerms.value]
+          contractClauses.value = [...contractClauses.value]
+          
+          // Force form re-render to ensure terms and clauses are displayed
+          formKey.value++
+          console.log('🔄 Form key updated after terms/clauses restoration:', formKey.value)
+          
+          // Clear the preview data from session storage
+          sessionStorage.removeItem('subcontractPreviewData')
+          
+          console.log('✅ All subcontract form data restored successfully')
+        } catch (error) {
+          console.error('Error restoring subcontract form data from preview:', error)
+        }
+    }).catch(err => {
+      console.error('❌ Error loading critical data for preview restoration:', err)
+    })
   } else if (previewData && !isReturningFromPreview) {
     // Clear stale preview data when creating a new subcontract
     console.log('🧹 Clearing stale preview data - creating new subcontract')

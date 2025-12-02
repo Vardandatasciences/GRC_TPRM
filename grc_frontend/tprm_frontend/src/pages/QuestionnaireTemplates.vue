@@ -172,9 +172,6 @@
         <button type="submit" class="qt-primary" :disabled="submitting">{{ submitting ? 'Saving...' : 'Save Template' }}</button>
         <button type="button" class="qt-secondary" @click="resetForm" :disabled="submitting">Reset</button>
       </div>
-
-      <p v-if="successMessage" class="qt-success">{{ successMessage }}</p>
-      <p v-if="submitError" class="qt-error">{{ submitError }}</p>
     </form>
 
     <!-- Static metric question selector -->
@@ -250,6 +247,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Popup Modal Component -->
+    <PopupModal />
   </div>
   
 </template>
@@ -259,6 +259,7 @@ import { reactive, ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import apiClient from '@/config/axios'
 import apiService from '@/services/api'
+import { PopupService, PopupModal } from '@/popup'
 
 const route = useRoute()
 const router = useRouter()
@@ -282,8 +283,6 @@ const form = reactive({
 
 const questions = ref([])
 const submitting = ref(false)
-const successMessage = ref('')
-const submitError = ref('')
 const importNotice = ref('')
 let importNoticeTimer = null
 
@@ -452,18 +451,28 @@ function getNextQuestionnaireId() {
 }
 
 function resetForm() {
-  form.template_name = ''
-  form.template_description = ''
-  form.template_version = '1.0'
-  form.template_type = 'STATIC'
-  form.module_type = 'GENERAL'
-  form.module_subtype = ''
-  form.approval_required = false
-  form.is_active = true
-  form.status = 'DRAFT'
-  questions.value = []
-  successMessage.value = ''
-  submitError.value = ''
+  PopupService.confirm(
+    'Are you sure you want to reset the form? All unsaved changes will be lost.',
+    'Confirm Reset',
+    () => {
+      // User confirmed, reset the form
+      form.template_name = ''
+      form.template_description = ''
+      form.template_version = '1.0'
+      form.template_type = 'STATIC'
+      form.module_type = 'GENERAL'
+      form.module_subtype = ''
+      form.approval_required = false
+      form.is_active = true
+      form.status = 'DRAFT'
+      questions.value = []
+      PopupService.success('Form has been reset successfully', 'Form Reset')
+    },
+    () => {
+      // User cancelled, do nothing
+      console.log('Reset cancelled by user')
+    }
+  )
 }
 
 function newQuestion() {
@@ -504,7 +513,19 @@ function duplicateQuestion(index) {
 }
 
 function removeQuestion(index) {
-  questions.value.splice(index, 1)
+  PopupService.confirm(
+    `Are you sure you want to remove Question ${index + 1}?`,
+    'Remove Question',
+    () => {
+      // User confirmed, remove the question
+      questions.value.splice(index, 1)
+      PopupService.success('Question removed successfully', 'Question Removed')
+    },
+    () => {
+      // User cancelled, do nothing
+      console.log('Remove question cancelled by user')
+    }
+  )
 }
 
 function setImportNotice(message, duration = 4000) {
@@ -671,10 +692,8 @@ function mapAnswerType(rawType) {
 }
 
 async function handleSubmit() {
-  submitError.value = ''
-  successMessage.value = ''
   if (!form.template_name.trim()) {
-    submitError.value = 'Template name is required'
+    PopupService.error('Template name is required', 'Validation Error')
     return
   }
 
@@ -726,29 +745,30 @@ async function handleSubmit() {
     const questionsCreated = responseData?.questions_created || 0
     const contractQuestionsCreated = responseData?.contract_questions_created || 0
     
+    let successMsg = ''
     if (form.module_type === 'SLA' && questionsCreated > 0) {
-      successMessage.value = `Saved successfully! Template ID: ${responseData?.template_id ?? 'N/A'} | ${questionsCreated} question(s) added to SLA metrics.`
+      successMsg = `Saved successfully! Template ID: ${responseData?.template_id ?? 'N/A'} | ${questionsCreated} question(s) added to SLA metrics.`
     } else if (form.module_type === 'CONTRACT' && contractQuestionsCreated > 0) {
-      successMessage.value = `Saved successfully! Template ID: ${responseData?.template_id ?? 'N/A'} | ${contractQuestionsCreated} question(s) added to contract static questionnaires.`
+      successMsg = `Saved successfully! Template ID: ${responseData?.template_id ?? 'N/A'} | ${contractQuestionsCreated} question(s) added to contract static questionnaires.`
     } else {
-      successMessage.value = `Saved successfully. Template ID: ${responseData?.template_id ?? 'N/A'}`
+      successMsg = `Saved successfully. Template ID: ${responseData?.template_id ?? 'N/A'}`
     }
     
     // If we came from SLA creation, redirect back after a short delay
     if (returnTo.value === 'sla-create') {
-      successMessage.value += ' Redirecting back to SLA creation...'
+      PopupService.success(successMsg + ' Redirecting back to SLA creation...', 'Template Saved')
       setTimeout(() => {
         router.push('/slas/create')
       }, 2000)
     } else if (returnTo.value === 'contract-create') {
       // If we came from contract creation, redirect back after a short delay
       // Include ?tab=terms to ensure the Terms tab is active
-      successMessage.value += ' Redirecting back to contract creation...'
+      PopupService.success(successMsg + ' Redirecting back to contract creation...', 'Template Saved')
       setTimeout(() => {
         router.push('/contracts/create?tab=terms')
       }, 2000)
     } else if (returnTo.value === 'contract-amendment') {
-      successMessage.value += ' Redirecting back to contract amendment...'
+      PopupService.success(successMsg + ' Redirecting back to contract amendment...', 'Template Saved')
       const contractId = prefilledContractId.value || route.query.contract_id
       setTimeout(() => {
         if (contractId) {
@@ -758,7 +778,7 @@ async function handleSubmit() {
         }
       }, 2000)
     } else if (returnTo.value === 'contract-subcontract-advanced') {
-      successMessage.value += ' Redirecting back to subcontract creation...'
+      PopupService.success(successMsg + ' Redirecting back to subcontract creation...', 'Template Saved')
       const contractId = prefilledContractId.value || route.query.contract_id
       setTimeout(() => {
         if (contractId) {
@@ -768,7 +788,7 @@ async function handleSubmit() {
         }
       }, 2000)
     } else if (returnTo.value === 'subcontract-create') {
-      successMessage.value += ' Redirecting back to subcontract creation...'
+      PopupService.success(successMsg + ' Redirecting back to subcontract creation...', 'Template Saved')
       const parentContractId = route.query.parent_contract_id
       setTimeout(() => {
         if (parentContractId) {
@@ -778,10 +798,15 @@ async function handleSubmit() {
         }
       }, 2000)
     } else {
-      resetForm()
+      PopupService.success(successMsg, 'Template Saved')
+      // Reset form after 1.5 seconds to allow user to see the success message
+      setTimeout(() => {
+        resetForm()
+      }, 1500)
     }
   } catch (err) {
-    submitError.value = err?.response?.data?.message || err?.message || 'Failed to save template'
+    const errorMsg = err?.response?.data?.message || err?.message || 'Failed to save template'
+    PopupService.error(errorMsg, 'Save Failed')
   } finally {
     submitting.value = false
   }

@@ -41,6 +41,18 @@ from .vendor_authentication import UnifiedJWTAuthentication, SimpleAuthenticated
 # Initialize logger
 vendor_logger = logging.getLogger('vendor_security')
 
+# Database connection helper - Use tprm_integration database for all vendor operations
+from django.db import connections
+
+def get_db_connection():
+    """
+    Get the correct database connection for tprm_integration database.
+    Returns 'tprm' if available, otherwise falls back to 'default'.
+    """
+    if 'tprm' in connections.databases:
+        return connections['tprm']
+    return connections['default']
+
 
 class VendorCategoriesViewSet(VendorAuthenticationMixin, viewsets.ReadOnlyModelViewSet):
     """
@@ -1357,7 +1369,7 @@ class TempVendorViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
             # Step 3: Get RFP response data using response_id
             try:
                 # Query rfp_responses table directly using raw SQL to get all fields
-                with connection.cursor() as cursor:
+                with get_db_connection().cursor() as cursor:
                     # First, get the column names to avoid unknown column errors
                     cursor.execute("SHOW COLUMNS FROM rfp_responses")
                     available_columns = [row[0] for row in cursor.fetchall()]

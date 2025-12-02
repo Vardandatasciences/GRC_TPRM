@@ -11,6 +11,8 @@ from django.utils import timezone
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from django.conf import settings
+from datetime import datetime
 import uuid
 import json
 from .models import ApprovalWorkflows, ApprovalStages, ApprovalRequests, ApprovalComments, ApprovalRequestVersions
@@ -20,6 +22,21 @@ from tprm_backend.rfp.models import RFPResponse
 # RBAC imports
 from tprm_backend.rbac.tprm_decorators import rbac_rfp_required
 from tprm_backend.rfp.rfp_authentication import UnifiedJWTAuthentication, SimpleAuthenticatedPermission
+
+
+def get_naive_datetime():
+    """
+    Get a timezone-naive datetime for MySQL compatibility.
+    MySQL doesn't support timezone-aware datetimes when USE_TZ is False.
+    """
+    now = timezone.now()
+    # If USE_TZ is False or we need naive datetime for MySQL, remove timezone info
+    if not getattr(settings, 'USE_TZ', True):
+        return now.replace(tzinfo=None)
+    # If timezone-aware, convert to naive UTC
+    if timezone.is_aware(now):
+        return timezone.make_naive(now, timezone.utc)
+    return now
 
 
 def update_rfp_status_based_on_approval(approval_request):
@@ -177,7 +194,7 @@ def update_rfp_status_based_on_approval(approval_request):
                 
                 # Only save if status changed
                 if rfp.status != old_status:
-                    rfp.updated_at = timezone.now()
+                    rfp.updated_at = get_naive_datetime()
                     rfp.save()
                     print(f"✅ RFP {rfp.rfp_id} status changed from {old_status} to {rfp.status}")
                 else:
@@ -285,7 +302,7 @@ def create_workflow_version(workflow_id, approval_ids, created_by, created_by_na
             'stages': stages_data,
             'version_info': {
                 'version_type': version_type,
-                'created_at': timezone.now().isoformat(),
+                'created_at': get_naive_datetime().isoformat(),
                 'approval_count': len(approval_requests_data),
                 'stage_count': len(stages_data)
             }
@@ -434,7 +451,7 @@ def create_approval_version(approval_id, stage_id, old_status, new_status, user_
                 'version_metadata': {
                     'version_number': version_number,
                     'version_type': version_type,
-                    'created_at': timezone.now().isoformat()
+                    'created_at': get_naive_datetime().isoformat()
                 }
             }
             
@@ -457,7 +474,7 @@ def create_approval_version(approval_id, stage_id, old_status, new_status, user_
                 'version_metadata': {
                     'version_number': version_number,
                     'version_type': version_type,
-                    'created_at': timezone.now().isoformat()
+                    'created_at': get_naive_datetime().isoformat()
                 }
             }
         
@@ -482,7 +499,7 @@ def create_approval_version(approval_id, stage_id, old_status, new_status, user_
             'is_current': True,
             'is_approved': new_status == 'APPROVED',
             'change_reason': change_reason or f"Stage status change: {old_status} → {new_status}",
-            'created_at': timezone.now()
+            'created_at': get_naive_datetime()
         }
         
         # Mark previous versions as not current
@@ -669,8 +686,8 @@ def workflows(request):
                         'stage_status': 'PENDING',
                         'deadline_date': stage_config.get('deadline_date'),
                         'is_mandatory': stage_config.get('is_mandatory', True),
-                        'created_at': timezone.now(),
-                        'updated_at': timezone.now()
+                        'created_at': get_naive_datetime(),
+                        'updated_at': get_naive_datetime()
                     }
 
                     ApprovalStages.objects.create(**stage_data)
@@ -690,7 +707,7 @@ def workflows(request):
                         approval_id = f"AR_{uuid.uuid4().hex[:8].upper()}"
                         
                         # Calculate expiry date (30 days from now by default)
-                        expiry_date = timezone.now() + timezone.timedelta(days=30)
+                        expiry_date = get_naive_datetime() + timezone.timedelta(days=30)
                         
                         # Determine priority based on RFP criticality
                         priority_map = {
@@ -716,10 +733,10 @@ def workflows(request):
                                 'proposal_data': proposal
                             }),
                             'overall_status': 'DRAFT',
-                            'submission_date': timezone.now(),
+                            'submission_date': get_naive_datetime(),
                             'expiry_date': expiry_date,
-                            'created_at': timezone.now(),
-                            'updated_at': timezone.now()
+                            'created_at': get_naive_datetime(),
+                            'updated_at': get_naive_datetime()
                         }
                         
                         ApprovalRequests.objects.create(**approval_request_data)
@@ -731,6 +748,33 @@ def workflows(request):
                         for stage_config in stages_config:
                             stage_id = f"ST_{uuid.uuid4().hex[:8].upper()}"
                             
+                            # Convert assigned_user_id to integer (model expects IntegerField)
+                            assigned_user_id = stage_config.get('assigned_user_id', '')
+                            try:
+                                if isinstance(assigned_user_id, str):
+                                    # Remove 'U' prefix if present (e.g., 'U001' -> 1)
+                                    if assigned_user_id.startswith('U'):
+                                        assigned_user_id = int(assigned_user_id[1:])
+                                    else:
+                                        assigned_user_id = int(assigned_user_id) if assigned_user_id.isdigit() else 1
+                                elif not isinstance(assigned_user_id, int):
+                                    assigned_user_id = 1
+                            except (ValueError, AttributeError):
+                                assigned_user_id = 1
+                            
+                            # Parse deadline_date if it's a string
+                            deadline_date = stage_config.get('deadline_date')
+                            if deadline_date:
+                                if isinstance(deadline_date, str):
+                                    try:
+                                        from datetime import datetime
+                                        deadline_date = datetime.fromisoformat(deadline_date.replace('Z', '+00:00'))
+                                        # Make it naive if needed
+                                        if timezone.is_aware(deadline_date):
+                                            deadline_date = timezone.make_naive(deadline_date, timezone.utc)
+                                    except (ValueError, AttributeError):
+                                        deadline_date = None
+                            
                             # Prepare stage data with proposal-specific information
                             stage_data = {
                                 'stage_id': stage_id,
@@ -738,16 +782,14 @@ def workflows(request):
                                 'stage_order': stage_config.get('stage_order', 1),
                                 'stage_name': f"{stage_config.get('stage_name', '')} - {proposal.get('vendor_name', 'Unknown')}",
                                 'stage_description': f"{stage_config.get('stage_description', '')} for proposal from {proposal.get('vendor_name', 'Unknown Vendor')}",
-                                'assigned_user_id': stage_config.get('assigned_user_id', ''),
+                                'assigned_user_id': assigned_user_id,
                                 'assigned_user_name': stage_config.get('assigned_user_name', ''),
                                 'assigned_user_role': stage_config.get('assigned_user_role', ''),
                                 'department': stage_config.get('department', ''),
                                 'stage_type': 'PARALLEL',  # All evaluators work in parallel
                                 'stage_status': 'PENDING',
-                                'deadline_date': stage_config.get('deadline_date'),
-                                'is_mandatory': stage_config.get('is_mandatory', True),
-                                'created_at': timezone.now(),
-                                'updated_at': timezone.now()
+                                'deadline_date': deadline_date,
+                                'is_mandatory': stage_config.get('is_mandatory', True)
                             }
                             
                             # Create stage for this proposal
@@ -762,7 +804,7 @@ def workflows(request):
                     approval_id = f"AR_{uuid.uuid4().hex[:8].upper()}"
                     
                     # Calculate expiry date (30 days from now by default)
-                    expiry_date = timezone.now() + timezone.timedelta(days=30)
+                    expiry_date = get_naive_datetime() + timezone.timedelta(days=30)
                     
                     # Create approval request for committee evaluation
                     approval_request_data = {
@@ -775,10 +817,10 @@ def workflows(request):
                         'priority': 'HIGH',
                         'request_data': json.dumps(rfp_data),
                         'overall_status': 'PENDING',
-                        'submission_date': timezone.now(),
+                        'submission_date': get_naive_datetime(),
                         'expiry_date': expiry_date,
-                        'created_at': timezone.now(),
-                        'updated_at': timezone.now()
+                        'created_at': get_naive_datetime(),
+                        'updated_at': get_naive_datetime()
                     }
                     
                     ApprovalRequests.objects.create(**approval_request_data)
@@ -789,6 +831,33 @@ def workflows(request):
                     for stage_config in stages_config:
                         stage_id = f"ST_{uuid.uuid4().hex[:8].upper()}"
                         
+                        # Convert assigned_user_id to integer (model expects IntegerField)
+                        assigned_user_id = stage_config.get('assigned_user_id', '')
+                        try:
+                            if isinstance(assigned_user_id, str):
+                                # Remove 'U' prefix if present (e.g., 'U001' -> 1)
+                                if assigned_user_id.startswith('U'):
+                                    assigned_user_id = int(assigned_user_id[1:])
+                                else:
+                                    assigned_user_id = int(assigned_user_id) if assigned_user_id.isdigit() else 1
+                            elif not isinstance(assigned_user_id, int):
+                                assigned_user_id = 1
+                        except (ValueError, AttributeError):
+                            assigned_user_id = 1
+                        
+                        # Parse deadline_date if it's a string
+                        deadline_date = stage_config.get('deadline_date')
+                        if deadline_date:
+                            if isinstance(deadline_date, str):
+                                try:
+                                    from datetime import datetime
+                                    deadline_date = datetime.fromisoformat(deadline_date.replace('Z', '+00:00'))
+                                    # Make it naive if needed
+                                    if timezone.is_aware(deadline_date):
+                                        deadline_date = timezone.make_naive(deadline_date, timezone.utc)
+                                except (ValueError, AttributeError):
+                                    deadline_date = None
+                        
                         # Prepare stage data
                         stage_data = {
                             'stage_id': stage_id,
@@ -796,16 +865,14 @@ def workflows(request):
                             'stage_order': stage_config.get('stage_order', 0),  # All stages run in parallel
                             'stage_name': stage_config.get('stage_name', ''),
                             'stage_description': stage_config.get('stage_description', ''),
-                            'assigned_user_id': stage_config.get('assigned_user_id', ''),
+                            'assigned_user_id': assigned_user_id,
                             'assigned_user_name': stage_config.get('assigned_user_name', ''),
                             'assigned_user_role': stage_config.get('assigned_user_role', ''),
                             'department': stage_config.get('department', 'Committee'),
                             'stage_type': 'PARALLEL',  # All committee members work in parallel
                             'stage_status': 'PENDING',
-                            'deadline_date': stage_config.get('deadline_date'),
-                            'is_mandatory': stage_config.get('is_mandatory', True),
-                            'created_at': timezone.now(),
-                            'updated_at': timezone.now()
+                            'deadline_date': deadline_date,
+                            'is_mandatory': stage_config.get('is_mandatory', True)
                         }
                         
                         # Create stage for committee member
@@ -823,7 +890,7 @@ def workflows(request):
                         approval_id = f"AR_{uuid.uuid4().hex[:8].upper()}"
                         
                         # Calculate expiry date (30 days from now by default)
-                        expiry_date = timezone.now() + timezone.timedelta(days=30)
+                        expiry_date = get_naive_datetime() + timezone.timedelta(days=30)
                         
                         # Determine priority based on RFP criticality
                         priority_map = {
@@ -845,10 +912,10 @@ def workflows(request):
                             'priority': priority,
                             'request_data': json.dumps(rfp_data),
                             'overall_status': 'DRAFT',
-                            'submission_date': timezone.now(),
+                            'submission_date': get_naive_datetime(),
                             'expiry_date': expiry_date,
-                            'created_at': timezone.now(),
-                            'updated_at': timezone.now()
+                            'created_at': get_naive_datetime(),
+                            'updated_at': get_naive_datetime()
                         }
                         
                         ApprovalRequests.objects.create(**approval_request_data)
@@ -860,27 +927,60 @@ def workflows(request):
                         for stage_config in stages_config:
                             stage_id = f"ST_{uuid.uuid4().hex[:8].upper()}"
                             
+                            # Convert assigned_user_id to integer (model expects IntegerField)
+                            assigned_user_id = stage_config.get('assigned_user_id', '')
+                            try:
+                                if isinstance(assigned_user_id, str):
+                                    # Remove 'U' prefix if present (e.g., 'U001' -> 1)
+                                    if assigned_user_id.startswith('U'):
+                                        assigned_user_id = int(assigned_user_id[1:])
+                                    else:
+                                        assigned_user_id = int(assigned_user_id) if assigned_user_id.isdigit() else 1
+                                elif not isinstance(assigned_user_id, int):
+                                    assigned_user_id = 1
+                            except (ValueError, AttributeError):
+                                assigned_user_id = 1
+                            
+                            # Parse deadline_date if it's a string
+                            deadline_date = stage_config.get('deadline_date')
+                            if deadline_date:
+                                if isinstance(deadline_date, str):
+                                    try:
+                                        from datetime import datetime
+                                        deadline_date = datetime.fromisoformat(deadline_date.replace('Z', '+00:00'))
+                                        # Make it naive if needed
+                                        if timezone.is_aware(deadline_date):
+                                            deadline_date = timezone.make_naive(deadline_date, timezone.utc)
+                                    except (ValueError, AttributeError):
+                                        deadline_date = None
+                            
                             # Prepare stage data
+                            # Note: created_at and updated_at are auto-managed by Django (auto_now_add/auto_now)
                             stage_data = {
                                 'stage_id': stage_id,
                                 'approval_id': approval_id,
                                 'stage_order': stage_config.get('stage_order', 1),
                                 'stage_name': stage_config.get('stage_name', ''),
                                 'stage_description': stage_config.get('stage_description', ''),
-                                'assigned_user_id': stage_config.get('assigned_user_id', ''),
+                                'assigned_user_id': assigned_user_id,
                                 'assigned_user_name': stage_config.get('assigned_user_name', ''),
                                 'assigned_user_role': stage_config.get('assigned_user_role', ''),
                                 'department': stage_config.get('department', ''),
                                 'stage_type': stage_config.get('stage_type', 'SEQUENTIAL'),
                                 'stage_status': 'PENDING',
-                                'deadline_date': stage_config.get('deadline_date'),
-                                'is_mandatory': stage_config.get('is_mandatory', True),
-                                'created_at': timezone.now(),
-                                'updated_at': timezone.now()
+                                'deadline_date': deadline_date,
+                                'is_mandatory': stage_config.get('is_mandatory', True)
                             }
                             
                             # Create stage
-                            ApprovalStages.objects.create(**stage_data)
+                            try:
+                                ApprovalStages.objects.create(**stage_data)
+                                print(f"[INFO] Created stage {stage_id} for approval {approval_id}")
+                            except Exception as stage_error:
+                                print(f"[ERROR] Failed to create stage {stage_id}: {str(stage_error)}")
+                                import traceback
+                                traceback.print_exc()
+                                raise  # Re-raise to see the actual error
                     
                     # Create or update RFP record with approval_workflow_id (only for single RFP)
                     try:
@@ -904,7 +1004,7 @@ def workflows(request):
                         if not created:
                             # Update existing RFP with approval_workflow_id
                             rfp.approval_workflow_id = workflow_id
-                            rfp.updated_at = timezone.now()
+                            rfp.updated_at = get_naive_datetime()
                             rfp.save()
                             print(f"Updated existing RFP {rfp.rfp_id} with approval_workflow_id: {workflow_id}")
                         else:
@@ -976,15 +1076,19 @@ def users(request):
     """
     try:
         # Import required models
-        from rfp.models import CustomUser
+        from tprm_backend.rfp.models import CustomUser
         from django.contrib.auth.models import User
-        import django.db as db
+        from django.db import connection
         
         # Get workflow_type from query parameters
         workflow_type = request.query_params.get('workflow_type', '')
         
+        print(f"[USERS_API] Fetching users for workflow_type: {workflow_type}")
+        
         # Get all active users from the database
         all_users = CustomUser.objects.filter(is_active='Y').order_by('first_name', 'last_name')
+        total_users_count = all_users.count()
+        print(f"[USERS_API] Total active users in users table: {total_users_count}")
         
         # Determine which roles to filter by based on workflow_type
         if workflow_type == 'rfp_creation':
@@ -994,91 +1098,191 @@ def users(request):
             # For other workflows: Admin, System Owner, Procurement, Sourcing, Management, Executive
             allowed_roles = ['Admin', 'System Owner', 'Procurement', 'Sourcing', 'Management', 'Executive']
         
-        print(f"Workflow type: {workflow_type}")
-        print(f"Allowed roles: {allowed_roles}")
+        print(f"[USERS_API] Allowed roles: {allowed_roles}")
         
-        # Get user IDs with allowed roles from rbac_tprm
-        with connection.cursor() as cursor:
-            # Build the SQL IN clause dynamically
-            placeholders = ','.join(['%s'] * len(allowed_roles))
-            query = f"""
-                SELECT DISTINCT UserId 
-                FROM rbac_tprm 
-                WHERE Role IN ({placeholders}) 
-                AND IsActive = 'Y'
-            """
-            cursor.execute(query, allowed_roles)
-            allowed_user_ids = [row[0] for row in cursor.fetchall()]
+        # Get user IDs with allowed roles from rbac_tprm table
+        # Query the rbac_tprm table directly with proper column names
+        allowed_user_ids = []
+        user_role_map = {}  # Initialize outside try block to ensure it's always available
+        try:
+            with connection.cursor() as cursor:
+                # First, check what values exist in rbac_tprm for debugging
+                cursor.execute("SELECT COUNT(*) FROM tprm_integration.rbac_tprm")
+                rbac_total = cursor.fetchone()[0]
+                print(f"[USERS_API] Total records in rbac_tprm table: {rbac_total}")
+                
+                # Check what roles exist in the table
+                cursor.execute("SELECT DISTINCT Role FROM tprm_integration.rbac_tprm LIMIT 20")
+                existing_roles = [row[0] for row in cursor.fetchall()]
+                print(f"[USERS_API] Existing roles in rbac_tprm: {existing_roles}")
+                
+                # Check what IsActive values exist
+                cursor.execute("SELECT DISTINCT IsActive FROM tprm_integration.rbac_tprm LIMIT 10")
+                existing_isactive = [row[0] for row in cursor.fetchall()]
+                print(f"[USERS_API] Existing IsActive values in rbac_tprm: {existing_isactive}")
+                
+                # Build query with proper column names from rbac_tprm table
+                placeholders = ','.join(['%s'] * len(allowed_roles))
+                
+                # Query rbac_tprm table: UserId, UserName, Role, IsActive
+                # IsActive is varchar(1), so check for 'Y', '1', or case-insensitive 'y'
+                query = f"""
+                    SELECT DISTINCT UserId, UserName, Role
+                    FROM tprm_integration.rbac_tprm 
+                    WHERE Role IN ({placeholders}) 
+                    AND (IsActive = 'Y' OR IsActive = 'y' OR IsActive = '1' OR UPPER(IsActive) = 'Y')
+                """
+                cursor.execute(query, allowed_roles)
+                results = cursor.fetchall()
+                
+                # Extract user IDs and store role mapping
+                # user_role_map already initialized before try block
+                for row in results:
+                    try:
+                        user_id_raw = row[0]
+                        # Convert to int for consistency
+                        if isinstance(user_id_raw, str) and user_id_raw.isdigit():
+                            user_id = int(user_id_raw)
+                        elif isinstance(user_id_raw, (int, float)):
+                            user_id = int(user_id_raw)
+                        else:
+                            user_id = user_id_raw
+                        
+                        username = row[1] if len(row) > 1 else None
+                        role = row[2] if len(row) > 2 else None
+                        
+                        allowed_user_ids.append(user_id)
+                        # Store role mapping with consistent key type
+                        user_role_map[user_id] = role or 'User'
+                        print(f"[USERS_API] Found user: UserId={user_id}, UserName={username}, Role={role}")
+                    except Exception as row_error:
+                        print(f"[USERS_API] Error processing row: {row}, error: {str(row_error)}")
+                        continue
+                
+                print(f"[USERS_API] Query found {len(allowed_user_ids)} user IDs with allowed roles")
+                print(f"[USERS_API] User-Role mapping: {user_role_map}")
+                
+                # If no results, try without IsActive filter as fallback
+                if len(allowed_user_ids) == 0:
+                    print(f"[USERS_API] No users found with IsActive filter, trying without filter...")
+                    query2 = f"""
+                        SELECT DISTINCT UserId, UserName, Role
+                        FROM tprm_integration.rbac_tprm 
+                        WHERE Role IN ({placeholders})
+                    """
+                    cursor.execute(query2, allowed_roles)
+                    result2 = cursor.fetchall()
+                    for row in result2:
+                        try:
+                            user_id_raw = row[0]
+                            # Convert to int for consistency
+                            if isinstance(user_id_raw, str) and user_id_raw.isdigit():
+                                user_id = int(user_id_raw)
+                            elif isinstance(user_id_raw, (int, float)):
+                                user_id = int(user_id_raw)
+                            else:
+                                user_id = user_id_raw
+                            
+                            username = row[1] if len(row) > 1 else None
+                            role = row[2] if len(row) > 2 else None
+                            
+                            allowed_user_ids.append(user_id)
+                            # Store role mapping with consistent key type
+                            user_role_map[user_id] = role or 'User'
+                        except Exception as row_error:
+                            print(f"[USERS_API] Error processing row in query2: {row}, error: {str(row_error)}")
+                            continue
+                    print(f"[USERS_API] Query 2 (no IsActive filter): Found {len(allowed_user_ids)} user IDs")
+                
+                print(f"[USERS_API] Final allowed_user_ids: {allowed_user_ids}")
+                print(f"[USERS_API] User-Role mapping: {user_role_map}")
+                
+        except Exception as rbac_error:
+            print(f"[USERS_API] Error querying rbac_tprm: {str(rbac_error)}")
+            import traceback
+            traceback.print_exc()
+            user_role_map = {}  # Initialize empty map on error
+            # Continue with empty list - will return all users if rbac check fails
         
         # Filter users based on allowed roles
         users_data = []
-        print(f"Total users in database: {all_users.count()}")
-        print(f"Users with allowed roles: {len(allowed_user_ids)}")
         
-        for user in all_users:
-            # Check if user has an allowed role in rbac_tprm
-            if user.user_id in allowed_user_ids:
-                # Get user's role from rbac_tprm
-                user_role = 'User'  # Default
-                with connection.cursor() as cursor:
-                    placeholders = ','.join(['%s'] * len(allowed_roles))
-                    query = f"""
-                        SELECT Role 
-                        FROM rbac_tprm 
-                        WHERE UserId = %s 
-                        AND Role IN ({placeholders})
-                        LIMIT 1
-                    """
-                    cursor.execute(query, [user.user_id] + allowed_roles)
-                    result = cursor.fetchone()
-                    if result:
-                        user_role = result[0]
-                
-                # Only add users who have an allowed role
+        # If no users found in rbac_tprm, return all active users as fallback
+        if len(allowed_user_ids) == 0:
+            print(f"[USERS_API] WARNING: No users found in rbac_tprm with allowed roles. Returning all active users as fallback.")
+            for user in all_users:
                 user_data = {
-                    'id': str(user.user_id),  # Convert to string for consistency
+                    'id': str(user.user_id),
                     'username': user.username,
                     'first_name': user.first_name or 'Unknown',
                     'last_name': user.last_name or 'User',
                     'email': user.email or '',
-                    'role': user_role,
+                    'role': 'User',  # Default role
                     'department': f'Department {user.department_id}' if user.department_id else 'General',
                     'is_active': user.is_active == 'Y'
                 }
                 users_data.append(user_data)
-                print(f"Added user: {user_data['first_name']} {user_data['last_name']} ({user_role})")
+                print(f"[USERS_API] Added user (fallback): {user_data['first_name']} {user_data['last_name']}")
+        else:
+            # Normal filtering by rbac_tprm roles - use the user_role_map from the query
+            for user in all_users:
+                # Convert user_id to int for comparison if needed
+                user_id_to_check = user.user_id
+                if isinstance(user_id_to_check, str) and user_id_to_check.isdigit():
+                    user_id_to_check = int(user_id_to_check)
+                
+                # Check if user has an allowed role in rbac_tprm
+                if user_id_to_check in allowed_user_ids:
+                    # Get user's role from the user_role_map (already fetched in the first query)
+                    user_role = user_role_map.get(user_id_to_check, 'User')  # Use map or default
+                    
+                    # Only add users who have an allowed role
+                    user_data = {
+                        'id': str(user.user_id),  # Convert to string for consistency
+                        'username': user.username,
+                        'first_name': user.first_name or 'Unknown',
+                        'last_name': user.last_name or 'User',
+                        'email': user.email or '',
+                        'role': user_role,
+                        'department': f'Department {user.department_id}' if user.department_id else 'General',
+                        'is_active': user.is_active == 'Y'
+                    }
+                    users_data.append(user_data)
+                    print(f"[USERS_API] Added user: {user_data['first_name']} {user_data['last_name']} ({user_role})")
         
-        print(f"Total users returned: {len(users_data)}")
+        print(f"[USERS_API] Total users returned: {len(users_data)}")
+        
+        # If still no users, return helpful error message
+        if len(users_data) == 0:
+            print(f"[USERS_API] ERROR: No users found matching criteria")
+            return Response({
+                'error': f'No users found with {", ".join(allowed_roles)} roles in rbac_tprm table. Please ensure users have the correct roles assigned.',
+                'workflow_type': workflow_type,
+                'allowed_roles': allowed_roles,
+                'total_users_in_db': total_users_count,
+                'users': []
+            }, status=status.HTTP_200_OK)  # Return 200 with error message so frontend can display it
+        
         return Response(users_data)
         
     except Exception as e:
-        # Fallback to mock data if database query fails
-        print(f"Error fetching users from database: {e}")
+        # Log the full error with traceback
+        print(f"[USERS_API] ❌ Error fetching users from database: {e}")
         import traceback
-        traceback.print_exc()
-        users_data = [
-            {
-                'id': '1',
-                'username': 'admin',
-                'first_name': 'Admin',
-                'last_name': 'User',
-                'email': 'admin@company.com',
-                'role': 'Executive',
-                'department': 'IT',
-                'is_active': True
-            },
-            {
-                'id': '2',
-                'username': 'manager',
-                'first_name': 'Manager',
-                'last_name': 'User',
-                'email': 'manager@company.com',
-                'role': 'Management',
-                'department': 'Operations',
-                'is_active': True
+        error_traceback = traceback.format_exc()
+        print(f"[USERS_API] Full traceback:\n{error_traceback}")
+        
+        # Return error response with detailed information
+        return Response({
+            'error': f'Failed to fetch users: {str(e)}',
+            'error_type': type(e).__name__,
+            'users': [],
+            'fallback': True,
+            'debug_info': {
+                'workflow_type': workflow_type if 'workflow_type' in locals() else None,
+                'allowed_roles': allowed_roles if 'allowed_roles' in locals() else None,
             }
-        ]
-        return Response(users_data)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET', 'POST'])
@@ -1335,7 +1539,7 @@ def get_proposal_id_from_approval(request, approval_id):
             rfp_id = request_data.get('rfp_id')
             if rfp_id:
                 # Import here to avoid circular imports
-                from rfp.models import RFPResponse
+                from tprm_backend.rfp.models import RFPResponse
                 
                 # Get all responses for this RFP
                 responses = RFPResponse.objects.filter(rfp_id=rfp_id)
@@ -1578,7 +1782,7 @@ def start_stage_review(request):
         # Only update if currently PENDING
         if stage.stage_status == 'PENDING':
             stage.stage_status = 'IN_PROGRESS'
-            stage.started_at = timezone.now()
+            stage.started_at = get_naive_datetime()
             stage.save()
             
             # Update overall approval status to IN_PROGRESS if it's still DRAFT or PENDING
@@ -1587,7 +1791,7 @@ def start_stage_review(request):
                 
                 if approval_request.overall_status in ['DRAFT', 'PENDING']:
                     approval_request.overall_status = 'IN_PROGRESS'
-                    approval_request.updated_at = timezone.now()
+                    approval_request.updated_at = get_naive_datetime()
                     approval_request.save()
                     print(f"✅ Updated overall approval status to IN_PROGRESS for approval_id {stage.approval_id}")
                     
@@ -1669,7 +1873,7 @@ def create_sample_approval_request(request):
             priority="HIGH",
             request_data=sample_request_data,
             overall_status="PENDING",
-            submission_date=timezone.now()
+            submission_date=get_naive_datetime()
         )
         
         # Create a corresponding approval stage for testing
@@ -1688,7 +1892,7 @@ def create_sample_approval_request(request):
             department="IT",
             stage_type="REVIEW",
             stage_status="PENDING",
-            deadline_date=timezone.now() + timezone.timedelta(days=7),
+            deadline_date=get_naive_datetime() + timezone.timedelta(days=7),
             is_mandatory=True
         )
         
@@ -1859,13 +2063,13 @@ def update_stage_status(request):
             stage.response_data = None
         
         if db_status == 'APPROVED':
-            stage.completed_at = timezone.now()
+            stage.completed_at = get_naive_datetime()
         elif db_status == 'REJECTED':
             stage.rejection_reason = comments
-            stage.completed_at = timezone.now()
+            stage.completed_at = get_naive_datetime()
         
         elif db_status == 'IN_PROGRESS':
-            stage.started_at = timezone.now()
+            stage.started_at = get_naive_datetime()
 
         # Store old status for version logging
         old_status = stage.stage_status
@@ -1987,7 +2191,7 @@ def update_stage_status(request):
             if rejected_stages > 0:
                 # If any stage is rejected, overall status is REJECTED
                 new_overall_status = 'REJECTED'
-                approval_request.completion_date = timezone.now()
+                approval_request.completion_date = get_naive_datetime()
                 print(f"  → Overall status: REJECTED (rejected stages found)")
                 
             elif total_stages_to_process > 0 and completed_stages == total_stages_to_process:
@@ -1995,12 +2199,12 @@ def update_stage_status(request):
                 if approved_stages == total_stages_to_process and rejected_stages == 0:
                     # All stages approved (no rejected stages)
                     new_overall_status = 'APPROVED'
-                    approval_request.completion_date = timezone.now()
+                    approval_request.completion_date = get_naive_datetime()
                     print(f"  → Overall status: APPROVED (all {approved_stages} stage(s) approved)")
                 else:
                     # Some stages rejected (shouldn't happen due to check above, but just in case)
                     new_overall_status = 'REJECTED'
-                    approval_request.completion_date = timezone.now()
+                    approval_request.completion_date = get_naive_datetime()
                     print(f"  → Overall status: REJECTED (some stages rejected)")
                     
             elif in_progress_stages > 0 or approved_stages > 0:
@@ -2015,7 +2219,7 @@ def update_stage_status(request):
             # Update approval request if status changed
             if new_overall_status != approval_request.overall_status:
                 approval_request.overall_status = new_overall_status
-                approval_request.updated_at = timezone.now()
+                approval_request.updated_at = get_naive_datetime()
                 approval_request.save()
                 print(f"✅ Updated overall approval status to {new_overall_status} for approval_id {stage.approval_id}")
                 
@@ -2332,7 +2536,7 @@ def get_document_url(request, file_id):
     Get document URL from s3_files table by file ID
     """
     try:
-        from rfp.models import S3Files
+        from tprm_backend.rfp.models import S3Files
         
         # Get file from s3_files table
         s3_file = S3Files.objects.get(id=file_id)
@@ -2366,7 +2570,7 @@ def get_risks_for_response(request, response_id):
     Query: entity='RFP' AND row=response_id (as string)
     """
     try:
-        from apps.vendor_risk.models import RiskTPRM
+        from tprm_backend.apps.vendor_risk.models import RiskTPRM
         
         # Convert response_id to string for comparison (row field is varchar(50))
         response_id_str = str(response_id)
@@ -2482,7 +2686,7 @@ def get_rfp_details_for_change_request(request, rfp_id):
     Get RFP details with change request context for editing
     """
     try:
-        from rfp.models import RFP, RFPEvaluationCriteria
+        from tprm_backend.rfp.models import RFP, RFPEvaluationCriteria
         
         # Get RFP details - use rfp_id field, not id
         rfp = RFP.objects.get(rfp_id=rfp_id)
@@ -2677,7 +2881,7 @@ def get_rfp_details_for_change_request(request, rfp_id):
             print(f"🔍 Related manager returned {criteria_count} criteria")
             
             # Debug: Check what criteria exist for ALL RFPs to see if data exists
-            from rfp.models import RFPEvaluationCriteria
+            from tprm_backend.rfp.models import RFPEvaluationCriteria
             all_criteria_count = RFPEvaluationCriteria.objects.all().count()
             print(f"🔍 TOTAL criteria in entire database: {all_criteria_count}")
             
@@ -2903,7 +3107,7 @@ def get_rfp_details_for_change_request(request, rfp_id):
                 # Try ORM as last resort
                 try:
                     print(f"🔄 Trying ORM as last resort for rfp_id={rfp.rfp_id}")
-                    from rfp.models import RFPEvaluationCriteria
+                    from tprm_backend.rfp.models import RFPEvaluationCriteria
                     # Use the RFP object directly (most reliable)
                     orm_criteria = RFPEvaluationCriteria.objects.filter(rfp=rfp).order_by('display_order')
                     if not orm_criteria.exists():
@@ -3046,7 +3250,7 @@ def get_rfp_details(request, rfp_id):
         documents_data = []
         if rfp.documents:
             try:
-                from rfp.models import S3Files
+                from tprm_backend.rfp.models import S3Files
                 
                 # Handle both array of IDs and array of objects
                 document_ids = rfp.documents
@@ -3380,7 +3584,7 @@ def change_requests(request):
                         if not rfp_id and request_data.get('id'):
                             try:
                                 numeric_id = int(request_data.get('id'))
-                                from rfp.models import RFP as RFPModel
+                                from tprm_backend.rfp.models import RFP as RFPModel
                                 rfp_obj = RFPModel.objects.get(id=numeric_id)
                                 rfp_id = rfp_obj.rfp_id
                                 if not rfp_title:
@@ -3450,7 +3654,7 @@ def change_requests(request):
             created_version_id = None
             try:
                 if approval_id and rfp_id:
-                    from rfp.models import RFP
+                    from tprm_backend.rfp.models import RFP
                     from rfp.serializers import RFPSerializer
 
                     rfp = RFP.objects.get(rfp_id=rfp_id)
@@ -3559,7 +3763,7 @@ def respond_to_change_request(request):
                 if not json_payload:
                     rfp_id = data.get('rfp_id')
                     if rfp_id:
-                        from rfp.models import RFP
+                        from tprm_backend.rfp.models import RFP
                         from rfp.serializers import RFPSerializer
                         rfp = RFP.objects.get(rfp_id=rfp_id)
                         json_payload = RFPSerializer(rfp).data
@@ -3605,7 +3809,7 @@ def respond_to_change_request(request):
                             stage.response_data = None
                             stage.started_at = None
                             stage.completed_at = None
-                            stage.updated_at = timezone.now()
+                            stage.updated_at = get_naive_datetime()
                             stage.save()
                         except ApprovalStages.DoesNotExist:
                             pass
@@ -3614,7 +3818,7 @@ def respond_to_change_request(request):
                     try:
                         approval_request = ApprovalRequests.objects.get(approval_id=approval_id)
                         approval_request.overall_status = 'IN_PROGRESS'
-                        approval_request.updated_at = timezone.now()
+                        approval_request.updated_at = get_naive_datetime()
                         approval_request.save()
 
                         # Also attempt to sync RFP status
@@ -3630,7 +3834,7 @@ def respond_to_change_request(request):
                         if json_payload is not None:
                             approval_request = ApprovalRequests.objects.get(approval_id=approval_id)
                             approval_request.request_data = json_payload
-                            approval_request.updated_at = timezone.now()
+                            approval_request.updated_at = get_naive_datetime()
                             approval_request.save()
                     except ApprovalRequests.DoesNotExist:
                         pass

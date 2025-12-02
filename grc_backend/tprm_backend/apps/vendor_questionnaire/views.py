@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.http import Http404
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
+from django.db.utils import ProgrammingError
 import os
 import tempfile
 import json
@@ -31,6 +32,18 @@ from .serializers import (
 # RBAC imports
 from tprm_backend.apps.vendor_core.vendor_authentication import VendorAuthenticationMixin
 from tprm_backend.rbac.tprm_decorators import rbac_vendor_required
+
+# Database connection helper - Use tprm_integration database for all vendor operations
+from django.db import connections
+
+def get_db_connection():
+    """
+    Get the correct database connection for tprm_integration database.
+    Returns 'tprm' if available, otherwise falls back to 'default'.
+    """
+    if 'tprm' in connections.databases:
+        return connections['tprm']
+    return connections['default']
 
 
 class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
@@ -377,7 +390,7 @@ class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
                     user_id = temp_vendor.userid
                     print(f"DEBUG - Fallback: Trying by userid={user_id}")
                     try:
-                        with connection.cursor() as cursor:
+                        with get_db_connection().cursor() as cursor:
                             cursor.execute("""
                                 SELECT DISTINCT rr.response_id
                                 FROM rfp_responses rr
@@ -569,6 +582,19 @@ class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
                 'templates': templates_data,
                 'count': len(templates_data)
             }, status=status.HTTP_200_OK)
+        except ProgrammingError as e:
+            # Handle case where table doesn't exist yet
+            error_msg = str(e)
+            if "doesn't exist" in error_msg.lower() or "1146" in error_msg:
+                print(f"Questionnaire templates table doesn't exist yet. Returning empty list.")
+                return Response({
+                    'success': True,
+                    'templates': [],
+                    'count': 0
+                }, status=status.HTTP_200_OK)
+            else:
+                # Re-raise if it's a different ProgrammingError
+                raise
         except Exception as e:
             import traceback
             print(f"Error listing questionnaire templates: {str(e)}")
@@ -623,6 +649,18 @@ class QuestionnaireViewSet(VendorAuthenticationMixin, viewsets.ModelViewSet):
                 'questions': questions,
                 'question_count': len(questions)
             }, status=status.HTTP_200_OK)
+        except ProgrammingError as e:
+            # Handle case where table doesn't exist yet
+            error_msg = str(e)
+            if "doesn't exist" in error_msg.lower() or "1146" in error_msg:
+                print(f"Questionnaire templates table doesn't exist yet.")
+                return Response(
+                    {'error': 'Questionnaire templates table does not exist yet'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            else:
+                # Re-raise if it's a different ProgrammingError
+                raise
         except Exception as e:
             import traceback
             print(f"Error getting questionnaire template: {str(e)}")

@@ -320,6 +320,54 @@ const selectedReviewer = computed(() =>
 // Get current user from store
 const currentUser = computed(() => store.getters['auth/currentUser'])
 
+// Helper function to get current user ID from various sources
+const getCurrentUserId = () => {
+  try {
+    // First try to get from Vuex store
+    const currentUser = store.getters?.['auth/currentUser']
+    if (currentUser) {
+      // Check all possible user ID fields
+      const userId = currentUser.userid || currentUser.user_id || currentUser.UserId || currentUser.id
+      if (userId) {
+        // Normalize to number for consistent comparison
+        const userIdNum = typeof userId === 'string' ? parseInt(userId, 10) : userId
+        if (!isNaN(userIdNum)) {
+          console.log('✅ Found user ID from store:', userIdNum, '(original:', userId, ')')
+          return userIdNum
+        }
+      }
+    }
+    
+    // Fallback to localStorage
+    const localUserId = localStorage.getItem('user_id') || localStorage.getItem('userid') || localStorage.getItem('UserId')
+    if (localUserId) {
+      const userIdNum = typeof localUserId === 'string' ? parseInt(localUserId, 10) : localUserId
+      if (!isNaN(userIdNum)) {
+        console.log('✅ Found user ID from localStorage:', userIdNum)
+        return userIdNum
+      }
+    }
+    
+    // Try to get from session storage
+    const sessionUserId = sessionStorage.getItem('user_id') || sessionStorage.getItem('userid') || sessionStorage.getItem('UserId')
+    if (sessionUserId) {
+      const userIdNum = typeof sessionUserId === 'string' ? parseInt(sessionUserId, 10) : sessionUserId
+      if (!isNaN(userIdNum)) {
+        console.log('✅ Found user ID from sessionStorage:', userIdNum)
+        return userIdNum
+      }
+    }
+    
+    console.warn('⚠️ No user ID found in any source')
+    console.warn('⚠️ Current user object:', currentUser)
+    console.warn('⚠️ Store state:', store.state.auth)
+    return null
+  } catch (error) {
+    console.error('❌ Error getting current user ID:', error)
+    return null
+  }
+}
+
 // Load data on component mount
 const loadData = async () => {
   loading.value = true
@@ -473,12 +521,18 @@ const handleSubmit = async () => {
 
   loading.value = true
   try {
-    // Get current user ID for assignee_id
-    const currentUserId = currentUser.value?.userid || currentUser.value?.user_id
+    // Get current user ID for assignee_id using the helper function
+    const currentUserId = getCurrentUserId()
     if (!currentUserId) {
+      console.error('❌ Unable to determine current user ID')
+      console.error('❌ Current user object:', currentUser.value)
+      console.error('❌ Store auth state:', store.state.auth)
       PopupService.error('Unable to determine current user. Please refresh the page and try again.', 'User Error')
+      loading.value = false
       return
     }
+    
+    console.log('✅ Current user ID determined:', currentUserId)
 
     // Prepare audit data for API
     const auditData = {

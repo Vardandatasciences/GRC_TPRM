@@ -157,11 +157,18 @@ class JWTAuthenticationMiddleware(MiddlewareMixin):
             '/auth/sentinel/callback/',
             '/api/sentinel/status/',
             '/api/sentinel/',
+            # TPRM API paths - let DRF authentication handle these
+            '/api/tprm/',
+            '/api/v1/vendor-',
 
         ]
         
         # Check if path should be skipped
         path = request.path_info
+        
+        # Skip all TPRM API paths - let DRF authentication handle them
+        if path.startswith('/api/tprm/') or path.startswith('/api/v1/vendor-'):
+            return None
         
         # Special handling for OAuth callback - exact match
         if path == '/oauth/callback' or path == '/oauth/callback/':
@@ -179,6 +186,21 @@ class JWTAuthenticationMiddleware(MiddlewareMixin):
         # Special handling for external applications - skip all external app endpoints
         if path.startswith('/api/external-applications/'):
             #logger.debug(f"[JWT Middleware] Skipping authentication for external applications: {path}")
+            return None
+
+        # Special handling for vendor portal endpoints - skip authentication
+        # Check both with and without trailing slash, and handle query parameters
+        path_without_query = path.split('?')[0]  # Remove query string if present
+        if (path_without_query.startswith('/api/tprm/rfp/rfp-details/') or \
+            path_without_query.startswith('/api/tprm/rfp/rfp-responses/') or \
+            path_without_query.startswith('/api/tprm/rfp/open-rfp/') or \
+            path_without_query.startswith('/api/tprm/rfp/invitations/') or \
+            path_without_query.startswith('/api/tprm/rfp/s3-files/') or \
+            path_without_query.startswith('/api/tprm/rfp/upload-document/') or \
+            '/evaluation-criteria/' in path_without_query or \
+            '/upload-document/' in path_without_query or \
+            '/create-unmatched-vendor/' in path_without_query):
+            logger.info(f"[JWT Middleware] Skipping authentication for vendor portal path: {path}")
             return None
         
         # Check other skip paths
@@ -203,6 +225,10 @@ class JWTAuthenticationMiddleware(MiddlewareMixin):
                 if payload and user_id:
                     logger.debug(f"[JWT Middleware] Successfully decoded token with custom verification, user_id: {user_id}")
                 else:
+                    # For TPRM paths, let DRF handle authentication if JWT verification fails
+                    if path.startswith('/api/tprm/') or path.startswith('/api/v1/vendor-'):
+                        logger.debug(f"[JWT Middleware] JWT verification failed for TPRM path {path}, letting DRF handle authentication")
+                        return None
                     logger.warning(f"[JWT Middleware] No user_id in JWT payload for path: {path}")
                     return JsonResponse({'error': 'Invalid token payload'}, status=401)
                 
@@ -234,6 +260,11 @@ class JWTAuthenticationMiddleware(MiddlewareMixin):
                 logger.warning(f"[JWT Middleware] User not found in database for path: {path}")
                 return JsonResponse({'error': 'User not found'}, status=401)
             except Exception as e:
+                # For TPRM paths, let DRF handle authentication errors
+                if path.startswith('/api/tprm/') or path.startswith('/api/v1/vendor-'):
+                    logger.debug(f"[JWT Middleware] JWT verification failed for TPRM path {path}, letting DRF handle authentication: {str(e)}")
+                    return None
+                
                 logger.error(f"[JWT Middleware] JWT authentication error for path {path}: {str(e)}")
                 logger.error(f"[JWT Middleware] Exception type: {type(e).__name__}")
                 logger.error(f"[JWT Middleware] Exception details: {str(e)}")

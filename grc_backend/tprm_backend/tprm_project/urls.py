@@ -27,8 +27,10 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/', include('rfp.urls')),
     path('api/v1/vendor-core/', include('apps.vendor_core.urls')),
+    # RFP Approval URLs - try multiple paths
     path('api/approval/', include('rfp_approval.urls')),
-    path('api/rfp-approval/', include('rfp_approval.urls')),  # Add this line for compatibility
+    path('api/rfp-approval/', include('rfp_approval.urls')),  # Compatibility path
+    path('api/tprm/rfp-approval/', include('rfp_approval.urls')),  # Alternative path
     path('api/auth/', include('tprm_project.auth_urls')),
     
     # Swagger documentation

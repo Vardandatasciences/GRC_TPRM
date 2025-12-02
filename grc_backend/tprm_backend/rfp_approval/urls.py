@@ -6,11 +6,11 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # User management - placed first to avoid conflicts
+    path('users/', views.users, name='approval-users'),
+    
     # Workflow management
     path('workflows/', views.workflows, name='approval-workflows'),
-    
-    # User management
-    path('users/', views.users, name='approval-users'),
     
     # Approval request management
     path('requests/', views.approval_requests, name='approval-requests'),

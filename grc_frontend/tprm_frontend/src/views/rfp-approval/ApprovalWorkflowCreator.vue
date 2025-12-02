@@ -1102,21 +1102,85 @@ const fetchUsers = async () => {
     }
     
     // Build URL with workflow_type parameter
-    let url = 'http://localhost:8000/api/approval/users/'
+    // Try multiple URL paths in case one doesn't work
+    let baseUrls = [
+      'http://localhost:8000/api/rfp-approval/users/',
+      'http://localhost:8000/api/tprm/rfp-approval/users/',
+      'http://localhost:8000/api/approval/users/'
+    ]
+    
+    let url = baseUrls[0] // Start with the most likely working path
     if (workflowType) {
       url += `?workflow_type=${workflowType}`
     }
     
-    console.log('Fetching users for workflow type:', workflowType)
-    const response = await axios.get(url, {
-      headers: getAuthHeaders()
-    })
-    users.value = response.data
-    console.log('Fetched users from backend:', users.value)
+    console.log('📡 Fetching users for workflow type:', workflowType)
+    console.log('📡 API URL:', url)
+    
+    let response
+    let lastError
+    
+    // Try each URL path until one works
+    for (const baseUrl of baseUrls) {
+      try {
+        const testUrl = workflowType ? `${baseUrl}?workflow_type=${workflowType}` : baseUrl
+        console.log(`🔄 Trying URL: ${testUrl}`)
+        response = await axios.get(testUrl, {
+          headers: getAuthHeaders()
+        })
+        console.log(`✅ Success with URL: ${testUrl}`)
+        break // Success, exit loop
+      } catch (error) {
+        console.log(`❌ Failed with URL: ${baseUrl}`, error.response?.status)
+        lastError = error
+        // Continue to next URL
+      }
+    }
+    
+    // If all URLs failed, throw the last error
+    if (!response) {
+      throw lastError || new Error('All URL paths failed')
+    }
+    
+    console.log('📊 Users API response:', response.data)
+    
+    // Check if response has error field (backend returns error in response body)
+    if (response.data && response.data.error) {
+      console.error('❌ Backend returned error:', response.data.error)
+      console.error('   Allowed roles:', response.data.allowed_roles)
+      console.error('   Total users in DB:', response.data.total_users_in_db)
+      users.value = []
+      // Show error notification
+      showError('No Users Available', response.data.error)
+    } else if (Array.isArray(response.data)) {
+      // Normal response - array of users
+      users.value = response.data
+      console.log(`✅ Fetched ${users.value.length} users from backend:`, users.value)
+      
+      if (users.value.length === 0) {
+        showWarning('No Users Found', `No users found with the required roles for ${workflowType || 'this workflow type'}. Please ensure users have the correct roles assigned in the rbac_tprm table.`)
+      }
+    } else if (response.data && response.data.users) {
+      // Response wrapped in object
+      users.value = response.data.users
+      console.log(`✅ Fetched ${users.value.length} users from backend:`, users.value)
+    } else {
+      console.warn('⚠️ Unexpected response format:', response.data)
+      users.value = []
+    }
   } catch (error) {
-    console.error('Error fetching users:', error)
-    // Fallback to empty array if API fails
+    console.error('❌ Error fetching users:', error)
+    console.error('   Error response:', error.response?.data)
+    console.error('   Error status:', error.response?.status)
+    
     users.value = []
+    
+    // Show user-friendly error message
+    const errorMessage = error.response?.data?.error || 
+                        error.response?.data?.message || 
+                        error.message || 
+                        'Failed to fetch users from the server'
+    showError('Error Loading Users', errorMessage)
   } finally {
     loadingUsers.value = false
   }

@@ -1258,14 +1258,16 @@ async function handleDocumentUpload() {
       }
       
       // Create FormData for file upload
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('title', file.name)
-      formData.append('description', 'SLA document for extraction')
-      formData.append('category', 'SLA')
-      formData.append('department', 'Compliance')
-      formData.append('doc_type', file.name.split('.').pop().toUpperCase())
-      formData.append('module_id', '1')
+      const uploadFormData = new FormData()
+      uploadFormData.append('file', file)
+      uploadFormData.append('title', file.name)
+      uploadFormData.append('description', 'SLA document for extraction')
+      uploadFormData.append('category', 'SLA')
+      uploadFormData.append('department', 'Compliance')
+      uploadFormData.append('doc_type', file.name.split('.').pop().toUpperCase())
+      uploadFormData.append('module_id', '1')
+      // Include reporting_frequency as fallback (will be overridden by AI extraction if found)
+      uploadFormData.append('reporting_frequency', formData.reporting_frequency || 'monthly')
 
       // Upload document and process with OCR
       const uploadUrl = getTprmApiUrl('ocr/upload/')
@@ -1274,7 +1276,7 @@ async function handleDocumentUpload() {
         headers: {
           'Authorization': `Bearer ${token}`
         },
-        body: formData,
+        body: uploadFormData,
         // Don't set Content-Type header - let browser set it with boundary
       })
 

@@ -97,6 +97,8 @@ const stageType = ref('All')
 const approvals = ref([])
 const loading = ref(false)
 const router = useRouter()
+const users = ref([])
+const selectedRequesterId = ref('')
 
 // Get current user from localStorage with Vuex fallback
 const getCurrentUserId = () => {

@@ -615,6 +615,7 @@ import { getCurrentUserId } from '@/utils/session'
 import { useNotifications } from '@/composables/useNotifications'
 import notificationService from '@/services/notificationService'
 import loggingService from '@/services/loggingService'
+import { getTprmApiUrl } from '@/utils/backendEnv'
 
 export default {
   name: 'StageReviewer',
@@ -638,6 +639,9 @@ export default {
       comments: ''
     })
     const showVersionHistory = ref(false)
+    
+    // API base URL for vendor-approval endpoints
+    const VENDOR_APPROVAL_API_BASE_URL = getTprmApiUrl('vendor-approval')
 
     onMounted(async () => {
       await loggingService.logPageView('Vendor', 'Stage Reviewer')
@@ -670,19 +674,36 @@ export default {
       if (!selectedUserId.value || !stageId) return
       
       try {
-        const response = await api.get(`/api/v1/vendor-approval/stages/assigned/${selectedUserId.value}/`)
-        const stages = response.data.map(stage => ({
+        console.log('Fetching stages for user:', selectedUserId.value, 'Looking for stage:', stageId)
+        console.log('API URL:', `${VENDOR_APPROVAL_API_BASE_URL}/stages/assigned/${selectedUserId.value}/`)
+        
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/stages/assigned/${selectedUserId.value}/`)
+        console.log('Stages response:', response.data)
+        
+        const stages = Array.isArray(response.data) ? response.data : []
+        const stagesWithDisplay = stages.map(stage => ({
           ...stage,
           request_data_display: stage.request_data ? JSON.stringify(stage.request_data, null, 2) : 'No data'
         }))
 
-        // Find the specific stage
-        const stage = stages.find(s => s.stage_id === stageId)
+        // Find the specific stage - try both string and number comparison
+        const stage = stagesWithDisplay.find(s => 
+          String(s.stage_id) === String(stageId) || 
+          s.stage_id === stageId ||
+          s.stage_id === parseInt(stageId)
+        )
+        
         if (!stage) {
-          console.warn('Stage not found or not assigned to this user')
+          console.warn('Stage not found or not assigned to this user', {
+            searchedStageId: stageId,
+            availableStageIds: stagesWithDisplay.map(s => s.stage_id),
+            userId: selectedUserId.value
+          })
+          showError('Stage not found or you do not have access to it')
           return
         }
 
+        console.log('Found stage:', stage)
         currentStage.value = stage
 
         // Fetch questionnaire questions and version history
@@ -693,7 +714,7 @@ export default {
         // Fetch questionnaire questions for regular questionnaire approval
         if (String(approvalType || '').toLowerCase().includes('questionnaire') && questionnaireId && approvalType !== 'response_approval') {
           try {
-            const qRes = await api.get(`/api/v1/vendor-approval/questionnaires/${questionnaireId}/questions/`)
+            const qRes = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/questionnaires/${questionnaireId}/questions/`)
             questionsMap.value[stage.stage_id] = qRes.data || []
           } catch (e) {
             questionsMap.value[stage.stage_id] = []
@@ -759,7 +780,7 @@ export default {
         
         if (shouldFetchVersionHistory) {
           try {
-            const vRes = await api.get(`/api/v1/vendor-approval/requests/${stage.approval_id}/versions/`)
+            const vRes = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/requests/${stage.approval_id}/versions/`)
             versionHistory.value[stage.approval_id] = vRes.data || []
             console.log(`✓ Version history loaded for stage ${stage.stage_id}: ${versionHistory.value[stage.approval_id].length} versions`)
             console.log('Version history data:', versionHistory.value[stage.approval_id])
@@ -817,7 +838,7 @@ export default {
           response_data: responseData
         }
 
-        await api.post(`/api/v1/vendor-approval/stages/${stage.stage_id}/action/`, decisionData)
+        await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/stages/${stage.stage_id}/action/`, decisionData)
         
         console.log('Stage decision submitted successfully')
         
@@ -1248,7 +1269,7 @@ export default {
         }))
 
         // Save scores to the questionnaire assignment
-        await api.post('/api/v1/vendor-approval/reviewer-scores/save/', {
+        await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/reviewer-scores/save/`, {
           assignment_id: assignmentId,
           scores: scores,
           reviewer_id: selectedUserId.value
@@ -1282,7 +1303,7 @@ export default {
         }))
 
         // Save scores to the questionnaire assignment
-        await api.post('/api/v1/vendor-approval/reviewer-scores/save/', {
+        await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/reviewer-scores/save/`, {
           assignment_id: assignmentId,
           scores: scores,
           reviewer_id: selectedUserId.value
@@ -1296,7 +1317,7 @@ export default {
           scores_saved_by: selectedUserId.value
         }
 
-        await api.post('/api/v1/vendor-approval/stage-draft/save/', {
+        await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/stage-draft/save/`, {
           stage_id: currentStage.value.stage_id,
           draft_data: stageScoreData,
           user_id: selectedUserId.value
@@ -1323,7 +1344,7 @@ export default {
 
     const loadSavedDraft = async (stageId) => {
       try {
-        const response = await api.get(`/api/v1/vendor-approval/stage-draft/load/${stageId}/`, {
+        const response = await api.get(`${VENDOR_APPROVAL_API_BASE_URL}/stage-draft/load/${stageId}/`, {
           params: { user_id: selectedUserId.value }
         })
         
@@ -1406,7 +1427,7 @@ export default {
 
         console.log('Saving draft for workflow type:', stage.workflow_type, 'with data:', Object.keys(draftData))
 
-        await api.post('/api/v1/vendor-approval/stage-draft/save/', {
+        await api.post(`${VENDOR_APPROVAL_API_BASE_URL}/stage-draft/save/`, {
           stage_id: stage.stage_id,
           draft_data: draftData,
           user_id: selectedUserId.value
