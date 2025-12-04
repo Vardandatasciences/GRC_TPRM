@@ -29,9 +29,11 @@ class RBACTPRMUtils:
         
         def resolve_user_identity(user_id=None, username=None, email=None):
             """
-            Normalize identifiers to a valid TPRM userid from the MFA users table.
+            Normalize identifiers to a valid userid from TPRM or GRC users table.
+            Cross-database support: Checks both TPRM and GRC databases.
             """
             try:
+                # First, try TPRM users table
                 query = Q()
                 if user_id:
                     query |= Q(userid=user_id)
@@ -40,14 +42,33 @@ class RBACTPRMUtils:
                 if email:
                     query |= Q(email=email)
                 
-                if not query:
-                    return None
+                if query:
+                    user = TprmUser.objects.filter(query).order_by('-updated_at', '-created_at').first()
+                    if user:
+                        logger.info(f"[RBAC TPRM] Resolved identifier to TPRM user_id={user.userid}, username={user.username}")
+                        return user.userid
+                    logger.debug(f"[RBAC TPRM] User not found in TPRM users table, checking GRC users...")
                 
-                user = TprmUser.objects.filter(query).order_by('-updated_at', '-created_at').first()
-                if user:
-                    logger.info(f"[RBAC TPRM] Resolved identifier to user_id={user.userid}, username={user.username}")
-                    return user.userid
-                logger.warning(f"[RBAC TPRM] Unable to resolve user identity (user_id={user_id}, username={username}, email={email}) in TPRM users table")
+                # If not found in TPRM, try GRC users table
+                try:
+                    from grc.models import Users as GrcUser
+                    grc_query = Q()
+                    if user_id:
+                        grc_query |= Q(UserId=user_id)
+                    if username:
+                        grc_query |= Q(UserName=username)
+                    if email:
+                        grc_query |= Q(Email=email)
+                    
+                    if grc_query:
+                        grc_user = GrcUser.objects.using('default').filter(grc_query).first()
+                        if grc_user:
+                            logger.info(f"[RBAC TPRM] Resolved identifier to GRC user_id={grc_user.UserId}, username={grc_user.UserName}")
+                            return grc_user.UserId
+                except Exception as grc_error:
+                    logger.debug(f"[RBAC TPRM] Could not check GRC users table: {grc_error}")
+                
+                logger.warning(f"[RBAC TPRM] Unable to resolve user identity (user_id={user_id}, username={username}, email={email}) in TPRM or GRC users tables")
             except Exception as e:
                 logger.error(f"[RBAC TPRM] Error resolving user identity: {e}")
             return None
@@ -192,7 +213,7 @@ class RBACTPRMUtils:
     
     @staticmethod
     def get_user_rbac_record(user_id):
-        """Get the RBAC TPRM record for a user with extensive debugging"""
+        """Get the RBAC TPRM record for a user with extensive debugging and auto-creation for GRC users"""
         try:
             logger.debug(f"[RBAC TPRM] Looking up RBAC record for user_id: {user_id}")
             
@@ -206,6 +227,21 @@ class RBACTPRMUtils:
                     logger.debug(f"[RBAC TPRM] Found {all_records.count()} inactive records for user {user_id}")
                 else:
                     logger.debug(f"[RBAC TPRM] No RBAC records at all for user {user_id}")
+                    
+                    # Check if this is a GRC user and auto-create RBAC record
+                    try:
+                        from grc.models import Users as GrcUser
+                        grc_user = GrcUser.objects.using('default').filter(UserId=user_id).first()
+                        if grc_user:
+                            logger.info(f"[RBAC TPRM] Found GRC user {grc_user.UserName}, auto-creating RBAC record with Admin role")
+                            # Create default RBAC record for GRC user with Admin permissions (full access)
+                            rbac_record = RBACTPRMUtils._create_default_rbac_for_grc_user(grc_user)
+                            if rbac_record:
+                                logger.info(f"[RBAC TPRM] Successfully created RBAC record for GRC user {user_id}")
+                                return rbac_record
+                    except Exception as grc_check_error:
+                        logger.debug(f"[RBAC TPRM] Could not check/create GRC user RBAC record: {grc_check_error}")
+                
                 return None
             
             logger.info(f"[RBAC TPRM] Found active RBAC record for user {user_id}: role={rbac_record.role}")
@@ -220,6 +256,57 @@ class RBACTPRMUtils:
                 logger.warning(f"[RBAC TPRM] Database connection error for user {user_id}: {e}. Database may be unreachable.")
             else:
                 logger.error(f"[RBAC TPRM] Error getting RBAC record for user {user_id}: {e}")
+            return None
+    
+    @staticmethod
+    def _create_default_rbac_for_grc_user(grc_user):
+        """
+        Create a default RBAC record for a GRC user with Admin role (full permissions)
+        """
+        try:
+            # Create RBAC record with Admin role and all permissions set to 1
+            rbac_record = RBACTPRM.objects.create(
+                user_id=grc_user.UserId,
+                username=grc_user.UserName,
+                role='Admin',
+                is_active='Y',
+                # RFP Permissions
+                create_rfp=1, edit_rfp=1, view_rfp=1, delete_rfp=1, clone_rfp=1,
+                submit_rfp_for_review=1, approve_rfp=1, reject_rfp=1,
+                assign_rfp_reviewers=1, view_rfp_approval_status=1,
+                view_rfp_versions=1, create_rfp_version=1, edit_rfp_version=1, view_rfp_version=1,
+                evaluate_rfp=1, assign_rfp_evaluators=1,
+                create_rfp_response=1, submit_rfp_response=1, view_rfp_responses=1, score_rfp_response=1,
+                # Contract Permissions  
+                createcontract=1, editcontract=1, viewcontract=1, deletecontract=1, clonecontract=1,
+                submitcontractforreview=1, approvecontract=1, rejectcontract=1,
+                assigncontractreviewers=1, viewcontractapprovalstatus=1,
+                viewcontractversions=1, createcontractversion=1, editcontractversion=1, viewcontractversion=1,
+                generatecontract=1, finalizecontract=1, renewcontract=1, archivecontract=1,
+                # Vendor Permissions
+                createvendor=1, editvendor=1, viewvendor=1, deletevendor=1,
+                approvevendor=1, rejectvendor=1, viewvendorlist=1,
+                createvendorcategory=1, editvendorcategory=1, viewvendorcategory=1, deletevendorcategory=1,
+                createvendorcontact=1, editvendorcontact=1, viewvendorcontact=1, deletevendorcontact=1,
+                # Risk Permissions
+                createrisk=1, editrisk=1, viewrisk=1, deleterisk=1,
+                submitriskforreview=1, approverisk=1, rejectrisk=1, assignriskreviewers=1,
+                # Compliance Permissions  
+                createcompliance=1, editcompliance=1, viewcompliance=1, deletecompliance=1,
+                submitcomplianceforreview=1, approvecompliance=1, rejectcompliance=1,
+                assigncompliancereviewers=1,
+                # BCP/DRP Permissions
+                createbcpdrp=1, editbcpdrp=1, viewbcpdrp=1, deletebcpdrp=1,
+                submitbcpdrpforreview=1, approvebcpdrp=1, rejectbcpdrp=1,
+                assignbcpdrpreviewers=1,
+                # SLA Permissions
+                createsla=1, editsla=1, viewsla=1, deletesla=1,
+                submitslaforreview=1, approvesla=1, rejectsla=1, assignslareviewers=1,
+            )
+            logger.info(f"[RBAC TPRM] Created default Admin RBAC record for GRC user {grc_user.UserId}")
+            return rbac_record
+        except Exception as e:
+            logger.error(f"[RBAC TPRM] Failed to create default RBAC record for GRC user {grc_user.UserId}: {e}")
             return None
     
     @staticmethod

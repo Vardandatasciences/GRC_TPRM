@@ -1,9 +1,113 @@
-__pycache__
+# Python cache and compiled files
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Database files
 *.db
 *.sqlite3
-*.log
+*.sql
+
+# Environment and secrets
 .env
-*.git
+*.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+README*
+CHANGELOG*
+LICENSE
+docs/
+
+# Media and upload directories (runtime data)
+MEDIA_ROOT/
+TEMP_MEDIA_ROOT/
+temp_uploads/
+secure_uploads/
+quarantine/
+Reports/
+
+# Backup files
+backups/
+*.bak
+*.backup
+
+# Static files (should be collected in production)
+staticfiles/
+
+# Test and coverage files
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.cover
+*.py,cover
+.hypothesis/
+
+# Logs
+*.log
+logs/
+
+# Debug and diagnostic scripts
+debug_*.py
+diagnose_*.py
+check_*.py
+fix_*.py
+grant_*.py
+*_DEBUG_*.py
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Node modules (if any frontend assets)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Multiple requirements files (keep only main one or copy all explicitly)
+# Uncomment if you want to include specific ones only
+# requirements_*.txt
