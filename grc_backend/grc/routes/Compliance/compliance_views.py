@@ -47,7 +47,7 @@ from django.db import models
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
-from ...routes.Global.export_service1 import (
+from ...routes.Global.s3_fucntions import (
     export_to_excel,
     export_to_csv,
     export_to_pdf,
@@ -5249,7 +5249,7 @@ def process_export_task(task_id, item_type=None, item_id=None):
                 })
             
             # Use the export_data function from export_service1
-            from ...routes.Global.export_service1 import export_data
+            from ...routes.Global.s3_fucntions import export_data
             result = export_data(
                 data=compliances_data,
                 file_format=task.file_type,
@@ -8267,7 +8267,7 @@ def export_compliances(request, export_format, item_type=None, item_id=None):
                 })
             
             # Use the export_data function from export_service1
-            from ...routes.Global.export_service1 import export_data
+            from ...routes.Global.s3_fucntions import export_data
             result = export_data(
                 data=compliances_data,
                 file_format=export_format,
@@ -8389,7 +8389,7 @@ def export_compliances_post(request):
         # Process the export
         try:
             # Use the export_data function from export_service1
-            from ...routes.Global.export_service1 import export_data
+            from ...routes.Global.s3_fucntions import export_data
             result = export_data(
                 data=compliances_data,
                 file_format=file_format,
@@ -9291,7 +9291,7 @@ def export_audit_management_compliances(request, format):
         
         # Use the export_data function from export_service1
         try:
-            from ...routes.Global.export_service1 import export_data
+            from ...routes.Global.s3_fucntions import export_data
             
             # Create file name with timestamp
             import datetime

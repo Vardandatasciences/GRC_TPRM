@@ -2690,6 +2690,10 @@ const fetchDynamicHomepageData = async () => {
       console.log('🔧 ========================================');
       console.log('🔧 UPDATING MODULE METRICS FROM DATABASE');
       console.log('🔧 ========================================');
+      console.log('📊 response.moduleMetrics exists:', !!response.moduleMetrics);
+      console.log('📊 response.moduleMetrics:', response.moduleMetrics ? JSON.stringify(response.moduleMetrics, null, 2) : 'undefined');
+      
+      let metricsUpdated = false;
       
       if (response.moduleMetrics && response.moduleMetrics.policy) {
         policyMetrics.value = {
@@ -2699,6 +2703,9 @@ const fetchDynamicHomepageData = async () => {
           avgApprovalTime: response.moduleMetrics.policy.avgApprovalTime || 0
         };
         console.log('  ✅ Policy metrics updated:', policyMetrics.value);
+        metricsUpdated = true;
+      } else {
+        console.warn('  ⚠️ Policy metrics not found in response.moduleMetrics');
       }
       
       if (response.moduleMetrics && response.moduleMetrics.compliance) {
@@ -2709,6 +2716,9 @@ const fetchDynamicHomepageData = async () => {
           underReview: response.moduleMetrics.compliance.underReview || 0
         };
         console.log('  ✅ Compliance metrics updated:', complianceMetrics.value);
+        metricsUpdated = true;
+      } else {
+        console.warn('  ⚠️ Compliance metrics not found in response.moduleMetrics');
       }
       
       if (response.moduleMetrics && response.moduleMetrics.risk) {
@@ -2725,6 +2735,9 @@ const fetchDynamicHomepageData = async () => {
           inProgress: response.moduleMetrics.risk.inProgress || response.moduleMetrics.risk.inProgressRisks || 0
         };
         console.log('  ✅ Risk metrics updated:', riskMetrics.value);
+        metricsUpdated = true;
+      } else {
+        console.warn('  ⚠️ Risk metrics not found in response.moduleMetrics');
       }
       
       if (response.moduleMetrics && response.moduleMetrics.incident) {
@@ -2739,6 +2752,9 @@ const fetchDynamicHomepageData = async () => {
           closureRate: response.moduleMetrics.incident.closureRate || 0
         };
         console.log('  ✅ Incident metrics updated:', incidentMetrics.value);
+        metricsUpdated = true;
+      } else {
+        console.warn('  ⚠️ Incident metrics not found in response.moduleMetrics');
       }
       
       if (response.moduleMetrics && response.moduleMetrics.audit) {
@@ -2751,10 +2767,38 @@ const fetchDynamicHomepageData = async () => {
           completedAudits: response.moduleMetrics.audit.completedAudits || 0
         };
         console.log('  ✅ Audit metrics updated:', auditorMetrics.value);
+        metricsUpdated = true;
+      } else {
+        console.warn('  ⚠️ Audit metrics not found in response.moduleMetrics');
+      }
+      
+      // Check if moduleMetrics exists in response
+      const hasModuleMetrics = response.moduleMetrics && Object.keys(response.moduleMetrics).length > 0;
+      
+      if (!metricsUpdated) {
+        console.warn('⚠️ WARNING: No module metrics were updated from unified endpoint!');
+        console.warn('⚠️ This may indicate the API response structure has changed or moduleMetrics is missing.');
+        if (!hasModuleMetrics) {
+          console.warn('⚠️ moduleMetrics object is missing or empty in response.');
+        } else {
+          console.warn('⚠️ moduleMetrics exists but some/all metrics are missing or have wrong structure.');
+        }
+        console.warn('⚠️ The fallback mechanism will try individual endpoints.');
       }
       
       console.log('🔧 ========================================');
       console.log('');
+      
+      // Return false if moduleMetrics is missing or no metrics were updated
+      // This will trigger the fallback to individual endpoints
+      if (!hasModuleMetrics || !metricsUpdated) {
+        console.log('🏠 ========================================');
+        console.warn('⚠️ Module metrics missing or incomplete - returning false to trigger fallback');
+        console.warn('⚠️ hasModuleMetrics:', hasModuleMetrics);
+        console.warn('⚠️ metricsUpdated:', metricsUpdated);
+        console.log('🏠 ========================================');
+        return false;
+      }
       
       console.log('🏠 ========================================');
       console.log('✅ ALL DATA SUCCESSFULLY UPDATED!');
@@ -3122,14 +3166,16 @@ const fetchAllDashboardMetrics = async () => {
     
     if (success) {
       console.log('✅ Successfully loaded data from unified homepage endpoint');
+      console.log('✅ Module metrics should be available now');
       // All data (donut + module cards) loaded from unified endpoint
+      // If moduleMetrics were missing, fetchDynamicHomepageData would have returned false
       return;
     }
     
     // ====================================================================
-    // FALLBACK: Use individual endpoints if unified endpoint fails
+    // FALLBACK: Use individual endpoints if unified endpoint fails or metrics are missing
     // ====================================================================
-    console.log('⚠️ Unified endpoint failed, falling back to individual endpoints...');
+    console.log('⚠️ Unified endpoint failed or moduleMetrics missing, falling back to individual endpoints...');
    
     if (isAuthenticated) {
       // User is authenticated - fetch all real data

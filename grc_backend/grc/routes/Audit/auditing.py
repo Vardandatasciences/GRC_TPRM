@@ -5,11 +5,13 @@ from django.shortcuts import get_object_or_404
 from ...models import Audit, AuditVersion
 from django.db import connection
 import json,datetime
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 from rest_framework.permissions import AllowAny
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser
 from .framework_filter_helper import get_active_framework_filter, apply_framework_filter_to_audits, get_framework_sql_filter
 
 # Custom authentication class for CSRF exempt sessions
@@ -900,6 +902,7 @@ def update_audit_findings(request):
 
 @csrf_exempt
 @api_view(['POST', 'OPTIONS'])
+@parser_classes([MultiPartParser, FormParser])
 @authentication_classes([CsrfExemptSessionAuthentication, BasicAuthentication])
 @permission_classes([AuditConductPermission])
 @audit_conduct_required

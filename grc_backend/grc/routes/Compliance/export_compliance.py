@@ -34,7 +34,7 @@ from django.db import models
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
-from ...routes.Global.export_service1 import export_data
+from ...routes.Global.s3_fucntions import export_data
 import json
 
 # Configure logging

@@ -739,16 +739,21 @@ onUnmounted(() => {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
-  display: flex;
+  display: flex !important;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+  margin-top: 1.5rem;
   margin-bottom: 1rem;
+  min-height: 48px;
+  /* Default background for buttons without primary/secondary class */
+  background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%) !important;
+  color: white !important;
 }
 
 .action-button.primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
-  color: white;
+  background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%) !important;
+  color: white !important;
 }
 
 .action-button.secondary {
@@ -769,9 +774,17 @@ onUnmounted(() => {
 }
 
 .button-text {
-  display: flex;
+  display: flex !important;
   align-items: center;
   gap: 0.5rem;
+  color: white !important;
+  font-weight: 600;
+}
+
+.button-text svg {
+  color: white !important;
+  fill: none;
+  stroke: currentColor;
 }
 
 .loading-content {

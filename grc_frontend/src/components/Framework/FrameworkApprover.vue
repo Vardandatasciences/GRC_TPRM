@@ -53,7 +53,7 @@
     </div>
     
     <!-- Active Filter Warning -->
-    <div v-if="selectedFrameworkId" class="filter-active-warning">
+    <!-- <div v-if="selectedFrameworkId" class="filter-active-warning">
       <i class="fas fa-info-circle"></i>
       <span>
         <strong>Filter Active:</strong> Showing frameworks for 
@@ -63,7 +63,7 @@
         <i class="fas fa-times"></i>
         Clear
       </button>
-    </div>
+    </div> -->
         
     <!-- Summary Cards Section -->
     <div class="framework_summary_section">

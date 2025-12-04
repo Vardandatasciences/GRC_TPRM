@@ -163,15 +163,77 @@ def jira_oauth(request):
     try:
         user_id = request.GET.get('user_id', 1)
         
-        # Get OAuth configuration from environment
-        client_id = os.environ.get('JIRA_CLIENT_ID', '')
-        redirect_uri = os.environ.get('JIRA_REDIRECT_URI', 'http://127.0.0.1:8000/api/jira/oauth-callback/')
-        scopes = os.environ.get('JIRA_SCOPES', 'read:jira-user read:jira-work')
+        # Get OAuth configuration from Django settings
+        client_id = getattr(settings, 'JIRA_CLIENT_ID', '')
+        redirect_uri = getattr(settings, 'JIRA_REDIRECT_URI', 'http://127.0.0.1:8000/api/jira/oauth-callback/')
+        scopes = getattr(settings, 'JIRA_SCOPES', 'read:jira-user read:jira-work')
+        use_local_dev = getattr(settings, 'USE_LOCAL_DEVELOPMENT', True)
         
+        # Force local redirect URI if in local development mode
+        if use_local_dev:
+            redirect_uri = 'http://127.0.0.1:8000/api/jira/oauth-callback/'
+        else:
+            # Ensure production redirect URI is clean (no quotes, no extra whitespace)
+            redirect_uri = str(redirect_uri).strip().strip("'\"")
+            # Fallback if somehow empty
+            if not redirect_uri:
+                redirect_uri = 'https://grc-backend.vardaands.com/api/jira/oauth-callback'
+        
+        # CRITICAL: Strip quotes from all parameters (they might be stored with quotes in env vars)
+        def clean_value(value):
+            """Remove quotes from anywhere in the string"""
+            if not value:
+                return ''
+            original = str(value)
+            value = str(value).strip()
+            # Remove quotes from start and end multiple times to handle nested quotes
+            while (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1].strip()
+            # Also use strip to remove any remaining quotes
+            value = value.strip("'\"")
+            # Log if we removed quotes
+            if original != value:
+                logger.info(f"Cleaned value: '{original}' -> '{value}'")
+            return value
+        
+        # Log raw values before cleaning
+        logger.info(f"Raw values from settings:")
+        logger.info(f"  Raw client_id: {repr(client_id)}")
+        logger.info(f"  Raw scopes: {repr(scopes)}")
+        logger.info(f"  Raw redirect_uri: {repr(redirect_uri)}")
+        
+        client_id = clean_value(client_id) if client_id else ''
+        scopes = clean_value(scopes) if scopes else 'read:jira-user read:jira-work'
+        redirect_uri = clean_value(redirect_uri)
+        
+        # Log cleaned values
+        logger.info(f"Cleaned values:")
+        logger.info(f"  Clean client_id: {repr(client_id)}")
+        logger.info(f"  Clean scopes: {repr(scopes)}")
+        logger.info(f"  Clean redirect_uri: {repr(redirect_uri)}")
+        
+        logger.info(f"Jira OAuth - USE_LOCAL_DEVELOPMENT: {use_local_dev}, Redirect URI: {redirect_uri}")
+        
+        # Validate all required parameters
         if not client_id:
+            logger.error("Jira OAuth - CLIENT_ID is empty or missing")
             return JsonResponse({
                 'success': False,
                 'error': 'Jira OAuth not configured - missing CLIENT_ID'
+            })
+        
+        if not redirect_uri:
+            logger.error("Jira OAuth - REDIRECT_URI is empty or missing")
+            return JsonResponse({
+                'success': False,
+                'error': 'Jira OAuth not configured - missing REDIRECT_URI'
+            })
+        
+        if not scopes:
+            logger.error("Jira OAuth - SCOPES is empty or missing")
+            return JsonResponse({
+                'success': False,
+                'error': 'Jira OAuth not configured - missing SCOPES'
             })
         
         # Store user_id in session for callback
@@ -183,16 +245,36 @@ def jira_oauth(request):
         request.session['jira_oauth_state'] = state
         
         # Build Atlassian OAuth URL with correct parameters
+        # Ensure all values are clean (no quotes)
         oauth_params = {
-            'client_id': client_id,
-            'scope': scopes,
+            'client_id': clean_value(client_id),
+            'scope': clean_value(scopes),
             'response_type': 'code',
-            'redirect_uri': redirect_uri,
-            'state': state,
+            'redirect_uri': clean_value(redirect_uri),
+            'state': str(state).strip(),
             'audience': 'api.atlassian.com'
         }
         
+        # Validate no empty values
+        for key, value in oauth_params.items():
+            if not value:
+                logger.error(f"Jira OAuth - Parameter '{key}' is empty!")
+                return JsonResponse({
+                    'success': False,
+                    'error': f'OAuth parameter {key} is empty or invalid'
+                })
+        
+        # Log the parameters being sent (without sensitive data)
+        logger.info(f"Jira OAuth Parameters:")
+        logger.info(f"  client_id: {oauth_params['client_id'][:20]}... (length: {len(oauth_params['client_id'])})")
+        logger.info(f"  redirect_uri: {oauth_params['redirect_uri']}")
+        logger.info(f"  scope: {oauth_params['scope']}")
+        logger.info(f"  state: {oauth_params['state'][:20]}...")
+        logger.info(f"  audience: {oauth_params['audience']}")
+        
         atlassian_oauth_url = f"https://auth.atlassian.com/authorize?{up.urlencode(oauth_params)}"
+        
+        logger.info(f"Jira OAuth - Full URL (first 300 chars): {atlassian_oauth_url[:300]}")
         
         # Redirect directly to Atlassian
         return HttpResponseRedirect(atlassian_oauth_url)
@@ -223,32 +305,42 @@ def jira_oauth_callback(request):
             # Verify state parameter
             if state != stored_state:
                 logger.error("OAuth state mismatch")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/jira?error=state_mismatch"
                 return HttpResponseRedirect(error_url)
             
             # Handle OAuth errors
             if error:
                 logger.error(f"OAuth error: {error} - {error_description}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/jira?error={error}"
                 return HttpResponseRedirect(error_url)
             
             if not code:
                 logger.error("No authorization code received")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/jira?error=no_code"
                 return HttpResponseRedirect(error_url)
             
             # Exchange code for access token
             try:
-                client_id = os.environ.get('JIRA_CLIENT_ID', '')
-                client_secret = os.environ.get('JIRA_CLIENT_SECRET', '')
-                redirect_uri = os.environ.get('JIRA_REDIRECT_URI', 'http://127.0.0.1:8000/api/jira/oauth-callback/')
+                client_id = getattr(settings, 'JIRA_CLIENT_ID', '')
+                client_secret = getattr(settings, 'JIRA_CLIENT_SECRET', '')
+                redirect_uri = getattr(settings, 'JIRA_REDIRECT_URI', 'http://127.0.0.1:8000/api/jira/oauth-callback/')
+                use_local_dev = getattr(settings, 'USE_LOCAL_DEVELOPMENT', True)
+                
+                # Force local redirect URI if in local development mode
+                if use_local_dev:
+                    redirect_uri = 'http://127.0.0.1:8000/api/jira/oauth-callback/'
+                else:
+                    # Ensure production redirect URI is clean (no quotes, no extra whitespace)
+                    redirect_uri = str(redirect_uri).strip().strip("'\"")
+                
+                logger.info(f"Jira OAuth Callback - USE_LOCAL_DEVELOPMENT: {use_local_dev}, Redirect URI: {redirect_uri}")
                 
                 if not client_id or not client_secret:
                     logger.error("Jira OAuth credentials not configured")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/jira?error=oauth_not_configured"
                     return HttpResponseRedirect(error_url)
                 
@@ -273,7 +365,7 @@ def jira_oauth_callback(request):
                 
                 if token_response.status_code != 200:
                     logger.error(f"Token exchange failed: {token_response.status_code} {token_response.text}")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/jira?error=token_exchange_failed"
                     return HttpResponseRedirect(error_url)
                 
@@ -282,7 +374,7 @@ def jira_oauth_callback(request):
                 
                 if not access_token:
                     logger.error("No access token in response")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/jira?error=no_access_token"
                     return HttpResponseRedirect(error_url)
                 
@@ -363,25 +455,31 @@ def jira_oauth_callback(request):
                     
                     logger.info(f"Successfully saved Jira connection with {len(resources_data)} resources")
                     
-                    # Clear session data
+                    # Store success flag in session temporarily (token is already saved in DB)
+                    request.session['jira_oauth_success'] = True
+                    request.session['jira_oauth_user_id'] = user_id
+                    
+                    # Clear OAuth state data
                     request.session.pop('jira_oauth_state', None)
                     request.session.pop('jira_user_id', None)
                     
-                    # Redirect back to frontend with success
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
-                    frontend_url = f"{frontend_base}/integration/jira?token={access_token}&user_id={user_id}&success=true"
+                    # Redirect back to frontend without token (to avoid URL length limit)
+                    # Frontend will load stored data from database
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
+                    frontend_url = f"{frontend_base}/integration/jira?success=true&user_id={user_id}"
                     
+                    logger.info(f"Redirecting to frontend: {frontend_url}")
                     return HttpResponseRedirect(frontend_url)
                     
                 except Users.DoesNotExist:
                     logger.error("User not found")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/jira?error=user_not_found"
                     return HttpResponseRedirect(error_url)
                     
             except requests.RequestException as e:
                 logger.error(f"Request error during token exchange: {str(e)}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://43.205.117.41')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/jira?error=network_error"
                 return HttpResponseRedirect(error_url)
         
@@ -495,6 +593,24 @@ def jira_projects(request):
             access_token = data.get('access_token')
             cloud_id = data.get('cloud_id')
             action = data.get('action', 'fetch_projects')
+            
+            # If no access token provided, try to get it from stored connection
+            if not access_token:
+                try:
+                    user = Users.objects.get(UserId=user_id)
+                    jira_app = ExternalApplication.objects.get(name='Jira')
+                    connection = ExternalApplicationConnection.objects.get(
+                        application=jira_app,
+                        user=user,
+                        connection_status='active'
+                    )
+                    access_token = connection.connection_token
+                    logger.info("Using stored connection token for fetching projects")
+                except (Users.DoesNotExist, ExternalApplication.DoesNotExist, ExternalApplicationConnection.DoesNotExist):
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'Access token is required and no stored connection found'
+                    })
             
             if not access_token:
                 return JsonResponse({

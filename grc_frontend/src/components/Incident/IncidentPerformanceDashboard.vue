@@ -675,7 +675,7 @@ export default {
             
             // Set data source message with timing
             const timeTaken = getTimeTaken();
-            this.dataSourceMessage = `✅ Loaded ${this.dashboardData.total_count} incidents from cache (prefetched on Home page) - ${timeTaken}`;
+            this.dataSourceMessage = '';
             
             // Update charts
             await this.$nextTick();
@@ -716,9 +716,8 @@ export default {
             resolution_rate: basicKPIs.resolution_rate
           };
           
-          // Set data source message with timing
-          const timeTaken = getTimeTaken();
-          this.dataSourceMessage = `✅ Loaded ${basicKPIs.totalCount} incidents from cache (prefetched on Home page) - ${timeTaken}`;
+          // Set data source message
+          this.dataSourceMessage = '';
           
           // Compute chart data from cache INSTANTLY with filters (no API calls needed!)
           console.log('⚡ [IncidentPerformanceDashboard] Computing chart data from cache with filters - INSTANT!');
@@ -811,9 +810,8 @@ export default {
             resolution_rate: summary.resolution_rate || 0
           }
           
-          // Set data source message for API fetch with timing
-          const timeTaken = getTimeTaken();
-          this.dataSourceMessage = `📊 Loaded ${this.dashboardData.total_count} incidents from API (cache unavailable or filters applied) - ${timeTaken}`;
+          // Set data source message for API fetch
+          this.dataSourceMessage = '';
           
           // Update chart data
           this.chartData = {

@@ -596,10 +596,22 @@ def export_data(data=None, file_format='xlsx', user_id='user123', options=None):
         if file_format.lower() not in all_supported_formats:
             raise ValueError(f"Unsupported export format: {file_format}. Supported: {all_supported_formats}")
         
-        # Check if format is supported by microservice
-        if file_format.lower() not in microservice_supported_formats:
-            # For xlsx format, we need to use local export and then upload
-            print(f"Format {file_format} not supported by microservice, using local export + upload")
+        # Check if format is supported by microservice OR if dataset is too large
+        # For large datasets (>1000 records or >1MB), use local export to avoid timeout
+        record_count = len(data) if isinstance(data, list) else 1
+        data_size_mb = data_size / (1024 * 1024)
+        use_local_export = (
+            file_format.lower() not in microservice_supported_formats or
+            record_count > 1000 or  # More than 1000 records
+            data_size_mb > 1.0  # More than 1MB of data
+        )
+        
+        if use_local_export:
+            # Use local export for unsupported formats OR large datasets to avoid timeout
+            if file_format.lower() not in microservice_supported_formats:
+                print(f"Format {file_format} not supported by microservice, using local export + upload")
+            else:
+                print(f"Large dataset detected ({record_count} records, {data_size_mb:.2f}MB), using local export + upload to avoid timeout")
             
             # Create export record
             export_id = save_export_record({

@@ -499,7 +499,7 @@ export default {
       this.loading = true;
       this.dataSourceMessage = 'Loading risk instances...';
       
-      const applyResponse = (data, source) => {
+      const applyResponse = (data) => {
         console.log('Risk instances data received:', data);
         
         // Process each risk instance to ensure required fields are initialized
@@ -530,13 +530,13 @@ export default {
             user_id: 'default_user'
           });
         }
-        this.dataSourceMessage = `Loaded ${this.riskInstances.length} risk instances ${source}`;
+        this.dataSourceMessage = ``;
       };
       
       const fetchFromApi = () => axios.get(API_ENDPOINTS.RISK_SCORING_INSTANCES_WITH_NAMES)
         .then(response => {
           const apiData = Array.isArray(response.data) ? response.data : (response.data?.riskInstances || response.data || []);
-          applyResponse(apiData, 'directly from API');
+          applyResponse(apiData);
           riskDataService.setData('riskInstances', apiData);
         });
       
@@ -545,7 +545,7 @@ export default {
           if (riskDataService.hasRiskInstancesCache()) {
             const cachedData = riskDataService.getData('riskInstances') || [];
             if (cachedData.length > 0) {
-              applyResponse(JSON.parse(JSON.stringify(cachedData)), 'from cache (prefetched on Home page)');
+              applyResponse(JSON.parse(JSON.stringify(cachedData)));
               this.loading = false;
               return null;
             }

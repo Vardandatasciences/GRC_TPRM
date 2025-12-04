@@ -2780,6 +2780,8 @@ urlpatterns = [
     path('change-management/framework/<int:framework_id>/add-compliance/', framework_comparison.add_compliance_from_amendment, name='add-compliance-from-amendment'),
     path('change-management/framework/<int:framework_id>/check-updates/', framework_comparison.check_framework_updates, name='check-framework-updates'),
     path('change-management/scan-downloads/', framework_comparison.scan_downloads_for_processing, name='scan-downloads-for-processing'),
+    path('change-management/framework/<int:framework_id>/start-analysis/', framework_comparison.start_amendment_analysis, name='start-amendment-analysis'),
+    path('change-management/framework/<int:framework_id>/document-info/', framework_comparison.get_amendment_document_info, name='get-amendment-document-info'),
 
 path('bamboohr/oauth/', bamboohr_oauth, name='bamboohr-oauth'),
     path('bamboohr/oauth-callback/', bamboohr_oauth_callback, name='bamboohr-oauth-callback'),

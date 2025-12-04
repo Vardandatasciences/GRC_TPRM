@@ -33,7 +33,8 @@ def update_progress(task_id, progress, message):
 def create_user_folder(userid):
     """
     Creates a folder with the name 'upload_userid' where userid is the provided user ID.
-    If folder exists, deletes it and creates a new one.
+    If folder exists, tries to delete it and creates a new one.
+    Handles OneDrive sync issues with retry logic.
     
     Args:
         userid (str): The user ID to create the folder for
@@ -42,7 +43,7 @@ def create_user_folder(userid):
         str: The path of the created folder
         
     Raises:
-        OSError: If there's an error creating the folder
+        OSError: If there's an error creating the folder after retries
     """
     # Create folder name with the user ID
     folder_name = f"upload_{userid}"
@@ -50,21 +51,63 @@ def create_user_folder(userid):
     # Create the folder path in MEDIA_ROOT
     folder_path = os.path.join(settings.MEDIA_ROOT, folder_name)
     
-    try:
-        # Delete folder if it exists
-        if os.path.exists(folder_path):
-            shutil.rmtree(folder_path)
-            print(f"Deleted existing folder: {folder_path}")
-        
-        # Create the new folder
-        os.makedirs(folder_path)
-        print(f"Created new folder: {folder_path}")
-        
-        return folder_path
-        
-    except OSError as e:
-        print(f"Error creating folder '{folder_name}': {e}")
-        raise
+    max_retries = 3
+    retry_delay = 1  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            # Delete folder if it exists (with retry logic for OneDrive sync issues)
+            if os.path.exists(folder_path):
+                try:
+                    shutil.rmtree(folder_path)
+                    print(f"Deleted existing folder: {folder_path}")
+                    # Small delay after deletion to let OneDrive sync
+                    time.sleep(0.5)
+                except (OSError, PermissionError) as delete_error:
+                    if attempt < max_retries - 1:
+                        print(f"Warning: Could not delete folder (attempt {attempt + 1}/{max_retries}): {delete_error}")
+                        print(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # If we can't delete, try to use existing folder or clear contents
+                        print(f"Warning: Could not delete folder after {max_retries} attempts. Trying to clear contents instead...")
+                        try:
+                            # Clear folder contents instead of deleting
+                            for item in os.listdir(folder_path):
+                                item_path = os.path.join(folder_path, item)
+                                if os.path.isdir(item_path):
+                                    shutil.rmtree(item_path, ignore_errors=True)
+                                else:
+                                    try:
+                                        os.remove(item_path)
+                                    except (OSError, PermissionError):
+                                        pass
+                            print(f"Cleared contents of existing folder: {folder_path}")
+                        except Exception as clear_error:
+                            print(f"Warning: Could not clear folder contents: {clear_error}")
+                            # Continue anyway - will try to create/use existing folder
+            
+            # Create the new folder (or ensure it exists)
+            os.makedirs(folder_path, exist_ok=True)
+            print(f"Created/verified folder: {folder_path}")
+            
+            return folder_path
+            
+        except (OSError, PermissionError) as e:
+            if attempt < max_retries - 1:
+                print(f"Error creating folder '{folder_name}' (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print(f"Error creating folder '{folder_name}' after {max_retries} attempts: {e}")
+                raise OSError(f"Failed to create folder '{folder_name}' after {max_retries} attempts. "
+                            f"This may be due to OneDrive sync locking the folder. "
+                            f"Original error: {e}")
+    
+    # Should not reach here, but just in case
+    raise OSError(f"Failed to create folder '{folder_name}'")
 
 def save_uploaded_file(uploaded_file, user_folder):
     """

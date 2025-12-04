@@ -56,10 +56,10 @@
         </div>
 
         <!-- 2. Policies List -->
-        <div class="menu-item" @click="navigate('/policies-list/all')" :class="{'active': isActive('/policies-list/all')}">
+        <!-- <div class="menu-item" @click="navigate('/policies-list/all')" :class="{'active': isActive('/policies-list/all')}">
           <i class="fas fa-list-alt icon"></i>
           <span>All Policies</span>
-        </div>
+        </div> -->
 
         <div @click="navigate('/framework-explorer')" class="menu-item" :class="{'active': isActive('/framework-explorer')}">
             <i class="fas fa-cubes icon"></i>
@@ -347,7 +347,7 @@
             <i class="fas fa-chart-pie icon"></i>
             <span>KPI Dashboard</span>
           </div>
-          <div class="menu-item" @click="navigate('/risk/baselkpis')" :class="{'active': isActive('/risk/baselkpis')}">
+          <div v-if="isBaselFramework" class="menu-item" @click="navigate('/risk/baselkpis')" :class="{'active': isActive('/risk/baselkpis')}">
             <i class="fas fa-university icon"></i>
             <span>Basel KPIs</span>
           </div>
@@ -990,6 +990,11 @@ export default {
         ? 'KPIs'
         : `${selectedFrameworkName.value} KPIs`
     })
+     // Check if Basel III framework is selected
+     const isBaselFramework = computed(() => {
+      const frameworkName = selectedFrameworkName.value.toLowerCase()
+      return frameworkName.includes('basel') && (frameworkName.includes('iii') || frameworkName.includes('3'))
+    })
     
     const openMenus = ref({
       policy: false,
@@ -1274,7 +1279,8 @@ export default {
       notifAudio,
       isActive,
       handleLogoutClick,
-      kpiLabel
+      kpiLabel,
+      isBaselFramework
     }
   }
 }

@@ -603,12 +603,47 @@ def bamboohr_oauth(request):
     """Handle BambooHR OAuth initiation - redirects directly to BambooHR"""
     try:
         user_id = request.GET.get('user_id', 1)
-        subdomain = request.GET.get('subdomain', '')
+        subdomain_raw = request.GET.get('subdomain', '').strip()
         
-        if not subdomain:
+        logger.info(f"BambooHR OAuth - Received subdomain from request: '{subdomain_raw}'")
+        
+        # Clean function to remove quotes (same as Jira)
+        def clean_value(value):
+            """Remove quotes from anywhere in the string"""
+            if not value:
+                return ''
+            original = str(value)
+            value = str(value).strip()
+            while (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1].strip()
+            value = value.strip("'\"")
+            if original != value:
+                logger.info(f"Cleaned value: '{original}' -> '{value}'")
+            return value
+        
+        # Get OAuth configuration from Django settings first
+        client_id = getattr(settings, 'BAMBOOHR_CLIENT_ID', '')
+        redirect_uri = getattr(settings, 'BAMBOOHR_REDIRECT_URI', 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/')
+        scopes = getattr(settings, 'BAMBOOHR_SCOPES', 'email openid employee company:info employee:contact employee:job employee:name employee:photo employee_directory')
+        use_local_dev = getattr(settings, 'USE_LOCAL_DEVELOPMENT', True)
+        
+        # Clean all configuration values
+        client_id = clean_value(client_id) if client_id else ''
+        scopes = clean_value(scopes) if scopes else 'email openid employee company:info employee:contact employee:job employee:name employee:photo employee_directory'
+        
+        # Validate and clean subdomain BEFORE storing in database
+        subdomain = subdomain_raw.strip().lower() if subdomain_raw else ''
+        # Remove any invalid characters (only allow alphanumeric and hyphens)
+        import re
+        subdomain = re.sub(r'[^a-z0-9\-]', '', subdomain)
+        
+        logger.info(f"BambooHR OAuth - Cleaned subdomain: '{subdomain}' (from '{subdomain_raw}')")
+        
+        if not subdomain or subdomain in ['www', '']:
+            logger.error(f"BambooHR OAuth - Invalid subdomain: '{subdomain}' (original: '{subdomain_raw}')")
             return JsonResponse({
                 'success': False,
-                'error': 'Subdomain is required for BambooHR OAuth'
+                'error': f'Invalid subdomain: "{subdomain_raw}". Please enter your company subdomain (e.g., "acme" for acme.bamboohr.com)'
             })
         
         # Generate state parameter for security
@@ -620,7 +655,7 @@ def bamboohr_oauth(request):
         oauth_state = OAuthState.objects.create(
             state=state,
             user_id=user_id,
-            subdomain=subdomain,
+            subdomain=subdomain,  # Store cleaned subdomain
             provider='bamboohr',
             expires_at=expires_at
         )
@@ -628,13 +663,17 @@ def bamboohr_oauth(request):
         logger.info(f"Stored OAuth state in database: {state[:10]}...")
         logger.info(f"State record ID: {oauth_state.id}, Subdomain: {subdomain}, User ID: {user_id}")
         
-        # Get OAuth configuration from environment
-        client_id = os.environ.get('BAMBOOHR_CLIENT_ID', '')
-        redirect_uri = os.environ.get('BAMBOOHR_REDIRECT_URI', 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/')
-        scopes = os.environ.get('BAMBOOHR_SCOPES', 'email openid employee company:info employee:contact employee:job employee:name employee:photo employee_directory')
+        # Force local redirect URI if in local development mode
+        if use_local_dev:
+            redirect_uri = 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/'
+        else:
+            redirect_uri = clean_value(redirect_uri)
+            if not redirect_uri:
+                redirect_uri = 'https://grc-backend.vardaands.com/api/bamboohr/oauth-callback/'
         
-        logger.info(f"Using redirect URI: {redirect_uri}")
-        logger.info(f"Local development mode: {os.environ.get('USE_LOCAL_DEVELOPMENT', 'True')}")
+        logger.info(f"BambooHR OAuth - USE_LOCAL_DEVELOPMENT: {use_local_dev}, Redirect URI: {redirect_uri}")
+        logger.info(f"BambooHR OAuth - Client ID: {client_id[:10]}... (length: {len(client_id)})")
+        logger.info(f"BambooHR OAuth - Subdomain: {subdomain}")
         
         if not client_id:
             return JsonResponse({
@@ -644,16 +683,30 @@ def bamboohr_oauth(request):
         
         # Build BambooHR OAuth URL
         import urllib.parse as up
+        # Ensure scopes is a string (space-separated)
+        scope_string = scopes if isinstance(scopes, str) else ' '.join(scopes) if isinstance(scopes, list) else str(scopes)
+        
+        # Clean all parameters before building URL
         oauth_params = {
             'request': 'authorize',
             'response_type': 'code',
-            'client_id': client_id,
-            'redirect_uri': redirect_uri,
-            'scope': scopes,
-            'state': state
+            'client_id': clean_value(client_id),
+            'redirect_uri': clean_value(redirect_uri),
+            'scope': clean_value(scope_string),
+            'state': str(state).strip()
         }
         
+        # Build the OAuth URL (subdomain already validated above)
         bamboohr_oauth_url = f"https://{subdomain}.bamboohr.com/authorize.php?{up.urlencode(oauth_params)}"
+        
+        # Log full URL for debugging
+        logger.info(f"🔗 BambooHR OAuth URL being generated:")
+        logger.info(f"   Subdomain: {subdomain}")
+        logger.info(f"   Client ID: {client_id[:20]}... (length: {len(client_id)})")
+        logger.info(f"   Redirect URI: {redirect_uri}")
+        logger.info(f"   Scopes: {scope_string}")
+        logger.info(f"   Full URL: {bamboohr_oauth_url[:300]}...")
+        logger.info(f"   Note: If you see login page, you may need to log into BambooHR first")
         
         # Redirect directly to BambooHR
         from django.http import HttpResponseRedirect
@@ -685,7 +738,7 @@ def bamboohr_oauth_callback(request):
                 # Check if expired
                 if oauth_state.is_expired():
                     logger.error(f"OAuth state has expired: {state}")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/bamboohr?error=state_expired"
                     from django.http import HttpResponseRedirect
                     return HttpResponseRedirect(error_url)
@@ -699,20 +752,20 @@ def bamboohr_oauth_callback(request):
                 
             except OAuthState.DoesNotExist:
                 logger.error(f"OAuth state not found in database: {state}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error=state_not_found"
                 from django.http import HttpResponseRedirect
                 return HttpResponseRedirect(error_url)
             
             # Check if this is a local development environment
-            # Use both host check and environment variable for consistency
-            is_local = os.environ.get('USE_LOCAL_DEVELOPMENT', 'True').lower() == 'true' or \
-                      '127.0.0.1' in request.get_host() or 'localhost' in request.get_host()
+            # Use Django settings for consistency
+            use_local_dev = getattr(settings, 'USE_LOCAL_DEVELOPMENT', True)
+            is_local = use_local_dev or '127.0.0.1' in request.get_host() or 'localhost' in request.get_host()
             
             # Verify state parameter
             if state != oauth_state.state:
                 logger.error(f"OAuth state mismatch - Expected: {oauth_state.state}, Got: {state}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error=state_mismatch"
                 
                 if is_local and '/oauth/callback' in request.path:
@@ -728,7 +781,7 @@ def bamboohr_oauth_callback(request):
             # Handle OAuth errors
             if error:
                 logger.error(f"OAuth error: {error} - {error_description}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error={error}"
                 
                 if is_local and '/oauth/callback' in request.path:
@@ -743,7 +796,7 @@ def bamboohr_oauth_callback(request):
             
             if not code:
                 logger.error("No authorization code received")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error=no_code"
                 
                 if is_local and '/oauth/callback' in request.path:
@@ -758,7 +811,7 @@ def bamboohr_oauth_callback(request):
             
             if not subdomain:
                 logger.error("No subdomain in session")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error=session_expired"
                 
                 if is_local and '/oauth/callback' in request.path:
@@ -773,18 +826,21 @@ def bamboohr_oauth_callback(request):
             
             # Exchange code for access token
             try:
-                client_id = os.environ.get('BAMBOOHR_CLIENT_ID', '')
-                client_secret = os.environ.get('BAMBOOHR_CLIENT_SECRET', '')
-                redirect_uri = os.environ.get('BAMBOOHR_REDIRECT_URI', 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/')
-                use_local = os.environ.get('USE_LOCAL_DEVELOPMENT', 'True')
+                client_id = getattr(settings, 'BAMBOOHR_CLIENT_ID', '')
+                client_secret = getattr(settings, 'BAMBOOHR_CLIENT_SECRET', '')
+                redirect_uri = getattr(settings, 'BAMBOOHR_REDIRECT_URI', 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/')
+                use_local_dev = getattr(settings, 'USE_LOCAL_DEVELOPMENT', True)
+                
+                # Force local redirect URI if in local development mode
+                if use_local_dev:
+                    redirect_uri = 'http://127.0.0.1:8000/api/bamboohr/oauth-callback/'
                 
                 # Log the redirect URI being used
-                logger.info(f"Using redirect URI: {redirect_uri}")
-                logger.info(f"Local development mode: {use_local}")
+                logger.info(f"BambooHR OAuth Callback - USE_LOCAL_DEVELOPMENT: {use_local_dev}, Redirect URI: {redirect_uri}")
                 
                 if not client_id or not client_secret:
                     logger.error("BambooHR OAuth credentials not configured")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/bamboohr?error=oauth_not_configured"
                     
                     if is_local and '/oauth/callback' in request.path:
@@ -817,7 +873,7 @@ def bamboohr_oauth_callback(request):
                 
                 if token_response.status_code != 200:
                     logger.error(f"Token exchange failed: {token_response.status_code} {token_response.text}")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/bamboohr?error=token_exchange_failed"
                     
                     if is_local and '/oauth/callback' in request.path:
@@ -835,7 +891,7 @@ def bamboohr_oauth_callback(request):
                 
                 if not access_token:
                     logger.error("No access token in response")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/bamboohr?error=no_access_token"
                     
                     if is_local and '/oauth/callback' in request.path:
@@ -953,16 +1009,17 @@ def bamboohr_oauth_callback(request):
                     except Exception as e:
                         logger.warning(f"Failed to clean up OAuth state: {e}")
                     
-                    # Redirect back to frontend with success
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
-                    frontend_url = f"{frontend_base}/integration/bamboohr?token={access_token}&user_id={user_id}&subdomain={subdomain}&success=true"
+                    # Redirect back to frontend with success (without token to avoid URL length limit)
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
+                    frontend_url = f"{frontend_base}/integration/bamboohr?success=true&user_id={user_id}&subdomain={subdomain}"
+                    
+                    logger.info(f"Redirecting to frontend: {frontend_url}")
                     
                     # For local testing, if the request is to /oauth/callback, return JSON instead of redirecting
                     if is_local and '/oauth/callback' in request.path:
                         return JsonResponse({
                             'success': True,
                             'message': 'OAuth authentication successful',
-                            'token': access_token,
                             'user_id': user_id,
                             'subdomain': subdomain,
                             'redirect_url': frontend_url
@@ -973,7 +1030,7 @@ def bamboohr_oauth_callback(request):
                     
                 except Users.DoesNotExist:
                     logger.error("User not found")
-                    frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                    frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                     error_url = f"{frontend_base}/integration/bamboohr?error=user_not_found"
                     
                     if is_local and '/oauth/callback' in request.path:
@@ -988,7 +1045,7 @@ def bamboohr_oauth_callback(request):
                     
             except requests.RequestException as e:
                 logger.error(f"Request error during token exchange: {str(e)}")
-                frontend_base = os.environ.get('FRONTEND_URL', 'http://localhost:8080')
+                frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:8080')
                 error_url = f"{frontend_base}/integration/bamboohr?error=network_error"
                 
                 if is_local and '/oauth/callback' in request.path:

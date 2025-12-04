@@ -611,6 +611,7 @@ export default {
       
       const urlParams = new URLSearchParams(window.location.search)
       const token = urlParams.get('token')
+      const success = urlParams.get('success')
       const loadStoredDataParam = urlParams.get('loadStoredData')
       const subdomainParam = urlParams.get('subdomain')
       const errorParam = urlParams.get('error')
@@ -622,8 +623,8 @@ export default {
         showOAuthFlow.value = false
         loading.value = false
         
-        // Handle error in same window
-        console.error('OAuth error:', errorParam)
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname)
         return
       }
       
@@ -636,7 +637,25 @@ export default {
         companyDomain.value = storedDomain
       }
       
-      if (token) {
+      // Handle OAuth success - load stored data from database
+      if (success === 'true') {
+        console.log('🎉 OAuth successful! Loading stored BambooHR data from database...')
+        accessToken.value = 'bamboohr_connected' // Set a flag to indicate OAuth was successful
+        showOAuthFlow.value = false
+        
+        // Set company info
+        if (companyDomain.value) {
+          companyInfo.value = { name: companyDomain.value + '.bamboohr.com' }
+        }
+        
+        // Load stored data from database
+        await loadStoredData()
+        
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname)
+        console.log('✅ OAuth success handled and URL cleaned up')
+      } else if (token) {
+        // Legacy support for token in URL (for backward compatibility)
         console.log('🎉 Access token found in URL from BambooHR OAuth redirect:', token.substring(0, 20) + '...')
         accessToken.value = token
         showOAuthFlow.value = false

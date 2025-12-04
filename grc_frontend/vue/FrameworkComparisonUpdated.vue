@@ -14,7 +14,7 @@
         >
           <i v-if="!checkingUpdates" class="fas fa-clipboard-check"></i>
           <i v-else class="fas fa-spinner fa-spin"></i>
-          {{ checkingUpdates ? 'Checking...' : 'Check with the updates' }}
+          {{ checkingUpdates ? 'Checking...' : 'Check the updates' }}
         </button>
         <button class="FC_export-button" @click="exportComparison">
           <i class="fas fa-download"></i>
@@ -34,6 +34,53 @@
               {{ framework.FrameworkName }} ({{ framework.amendment_count }} amendments)
             </option>
           </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Document Viewer Section -->
+    <div v-if="selectedFrameworkId && documentInfo && documentInfo.has_document" class="FC_document-viewer-card">
+      <div class="FC_document-viewer-content">
+        <div class="FC_document-info">
+          <div class="FC_document-icon">
+            <i class="fas fa-file-pdf"></i>
+          </div>
+          <div class="FC_document-details">
+            <h3 class="FC_document-name">{{ documentInfo.document.name }}</h3>
+            <p class="FC_document-meta">
+              Amendment Date: {{ documentInfo.document.amendment_date }} | 
+              Downloaded: {{ formatDate(documentInfo.document.downloaded_date) }}
+            </p>
+            <div v-if="documentInfo.document.processed" class="FC_document-status FC_document-processed">
+              <i class="fas fa-check-circle"></i>
+              Processed on {{ formatDate(documentInfo.document.processed_date) }}
+            </div>
+            <div v-else class="FC_document-status FC_document-pending">
+              <i class="fas fa-clock"></i>
+              Awaiting Analysis
+            </div>
+          </div>
+        </div>
+        <div class="FC_document-actions">
+          <button 
+            @click="viewDocument" 
+            class="FC_view-document-button"
+            title="View document in new tab"
+          >
+            <i class="fas fa-eye"></i>
+            View Document
+          </button>
+          <button 
+            v-if="!documentInfo.document.processed"
+            @click="startAnalysis" 
+            :disabled="analyzingDocument"
+            class="FC_start-analysis-button"
+            title="Start AI processing of the document"
+          >
+            <i v-if="!analyzingDocument" class="fas fa-brain"></i>
+            <i v-else class="fas fa-spinner fa-spin"></i>
+            {{ analyzingDocument ? 'Analyzing...' : 'Start Analysis' }}
+          </button>
         </div>
       </div>
     </div>
@@ -740,6 +787,10 @@ export default {
       checkingUpdates: false,
       showComplianceModal: false,
       complianceModalData: null,
+      
+      // Document Viewer
+      documentInfo: null,
+      analyzingDocument: false,
       complianceForm: {
         policy_name: '',
         policy_identifier: '',
@@ -883,6 +934,7 @@ export default {
         this.controlMatches = null
         this.complianceMatches = null
         this.expandedComplianceIndex = null
+        this.documentInfo = null
         return
       }
       
@@ -890,11 +942,14 @@ export default {
         this.loading = true
         this.error = null
         
-        // Load target data and summary in parallel
+        // Load target data, summary, and document info in parallel
         const [targetResponse, summaryResponse] = await Promise.all([
           frameworkComparisonService.getFrameworkTargetData(this.selectedFrameworkId),
           frameworkComparisonService.getFrameworkComparisonSummary(this.selectedFrameworkId)
         ])
+        
+        // Fetch document info separately (it sets this.documentInfo internally)
+        await this.fetchDocumentInfo()
         
         if (targetResponse.success) {
           this.targetData = targetResponse
@@ -970,6 +1025,9 @@ export default {
             message += `\nFile saved to: ${updateResult.downloaded_path}`
           }
 
+          // Always refresh document info to show the latest downloaded document
+          await this.fetchDocumentInfo()
+          
           if (hasUpdate) {
             await this.onFrameworkChange()
           }
@@ -983,6 +1041,88 @@ export default {
         alert(`Error checking updates: ${error.message}`)
       } finally {
         this.checkingUpdates = false
+      }
+    },
+    
+    async fetchDocumentInfo() {
+      if (!this.selectedFrameworkId) {
+        this.documentInfo = null
+        return
+      }
+      
+      try {
+        const response = await frameworkComparisonService.getAmendmentDocumentInfo(this.selectedFrameworkId)
+        
+        if (response && response.success) {
+          this.documentInfo = response
+          console.log('Document info loaded:', this.documentInfo)
+        } else {
+          this.documentInfo = null
+        }
+      } catch (error) {
+        console.error('Error fetching document info:', error)
+        this.documentInfo = null
+      }
+    },
+    
+    viewDocument() {
+      if (!this.documentInfo || !this.documentInfo.document || !this.documentInfo.document.url) {
+        alert('Document URL not available')
+        return
+      }
+      
+      // Open document in new tab
+      const documentUrl = this.documentInfo.document.url
+      window.open(documentUrl, '_blank')
+    },
+    
+    async startAnalysis() {
+      if (!this.selectedFrameworkId) {
+        alert('Please select a framework first.')
+        return
+      }
+      
+      if (!this.documentInfo || !this.documentInfo.has_document) {
+        alert('No document available to analyze.')
+        return
+      }
+      
+      try {
+        this.analyzingDocument = true
+        
+        const response = await frameworkComparisonService.startAmendmentAnalysis(this.selectedFrameworkId)
+        
+        if (response && response.success) {
+          alert(`Analysis completed successfully!\n\n${response.message}`)
+          
+          // Refresh document info and framework data
+          await this.fetchDocumentInfo()
+          await this.onFrameworkChange()
+        } else {
+          alert(response && response.error ? `Analysis failed: ${response.error}` : 'Analysis failed.')
+        }
+      } catch (error) {
+        console.error('Error starting analysis:', error)
+        alert(`Error starting analysis: ${error.message}`)
+      } finally {
+        this.analyzingDocument = false
+      }
+    },
+    
+    formatDate(dateString) {
+      if (!dateString) return 'N/A'
+      
+      try {
+        const date = new Date(dateString)
+        return date.toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      } catch (error) {
+        return dateString
       }
     },
     
@@ -1225,13 +1365,148 @@ export default {
 
 .FC_framework-selection-card,
 .FC_filters-card,
-.FC_legend-card {
+.FC_legend-card,
+.FC_document-viewer-card {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 24px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.FC_document-viewer-card {
+  background: transparent;
+  border: 1px solid #e5e7eb;
+  border-radius: 0;
+  box-shadow: none;
+  color: #1f2937;
+}
+
+.FC_document-viewer-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+.FC_document-info {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex: 1;
+}
+
+.FC_document-icon {
+  font-size: 48px;
+  color: #4f8cff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-radius: 0;
+  padding: 16px;
+  min-width: 80px;
+  height: 80px;
+}
+
+.FC_document-details {
+  flex: 1;
+}
+
+.FC_document-name {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: #1f2937;
+}
+
+.FC_document-meta {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin: 0 0 8px 0;
+}
+
+.FC_document-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  padding: 4px 12px;
+  border-radius: 0;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+
+.FC_document-processed {
+  background: transparent;
+  color: #22c55e;
+  border: 1px solid #22c55e;
+}
+
+.FC_document-pending {
+  background: transparent;
+  color: #f59e0b;
+  border: 1px solid #f59e0b;
+}
+
+.FC_document-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.FC_view-document-button,
+.FC_start-analysis-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 0;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid #d1d5db;
+  font-size: 0.9375rem;
+  background: transparent;
+  color: #1f2937;
+}
+
+.FC_view-document-button {
+  background: transparent;
+  color: #1f2937;
+  border: 1px solid #d1d5db;
+}
+
+.FC_view-document-button:hover {
+  background: transparent;
+  border-color: #4f8cff;
+  color: #4f8cff;
+  opacity: 0.8;
+}
+
+.FC_start-analysis-button {
+  background: transparent;
+  color: #1f2937;
+  font-weight: 600;
+  border: 1px solid #4f8cff;
+  color: #4f8cff;
+}
+
+.FC_start-analysis-button:hover:not(:disabled) {
+  background: transparent;
+  border-color: #1d4ed8;
+  color: #1d4ed8;
+  opacity: 0.8;
+  transform: none;
+  box-shadow: none;
+}
+
+.FC_start-analysis-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  border-color: #d1d5db;
+  color: #6b7280;
 }
 
 .FC_framework-selection-content,

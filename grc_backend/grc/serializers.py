@@ -511,10 +511,12 @@ class RiskSerializer(serializers.ModelSerializer):
 class RiskInstanceSerializer(serializers.ModelSerializer):
     # Add this custom field to handle any format of RiskMitigation
     RiskMitigation = serializers.JSONField(required=False, allow_null=True)
-    # Use DateField for MitigationDueDate instead of relying on auto-conversion
-    MitigationDueDate = serializers.DateField(required=False, allow_null=True, format="%Y-%m-%d")
-    # Handle other date/datetime fields to prevent conversion issues
-    MitigationCompletedDate = serializers.DateTimeField(required=False, allow_null=True, format="%Y-%m-%d %H:%M:%S")
+    # Use SerializerMethodField for date fields to prevent utcoffset errors
+    # This ensures dates are converted to strings before DRF tries to serialize them
+    MitigationDueDate = serializers.SerializerMethodField()
+    MitigationCompletedDate = serializers.SerializerMethodField()
+    CreatedAt = serializers.SerializerMethodField()
+    FirstResponseAt = serializers.SerializerMethodField()
     ModifiedMitigations = serializers.JSONField(required=False, allow_null=True)
     RiskFormDetails = serializers.JSONField(required=False, allow_null=True)
     # Handle MitigationStatus with proper choices validation
@@ -542,18 +544,51 @@ class RiskInstanceSerializer(serializers.ModelSerializer):
     def to_internal_value(self, data):
         # Convert the QueryDict or dict to a mutable dict
         mutable_data = data.copy() if hasattr(data, 'copy') else dict(data)
-       
+        
         # Remove Date field if present as it's been replaced with CreatedAt
         if 'Date' in mutable_data:
             mutable_data.pop('Date')
-       
+        
+        # Handle date fields for writes (SerializerMethodField is read-only, so we need to handle writes here)
+        # These fields will be handled by the model's field definitions during create/update
+        date_fields = ['MitigationDueDate', 'MitigationCompletedDate', 'CreatedAt']
+        for field in date_fields:
+            if field in mutable_data:
+                # If empty string, set to None
+                if mutable_data[field] == '':
+                    mutable_data[field] = None
+                # If it's already a date object, keep it
+                elif hasattr(mutable_data[field], 'isoformat'):
+                    pass  # Already a date object
+                # If it's a string, try to parse it
+                elif isinstance(mutable_data[field], str):
+                    try:
+                        from datetime import datetime
+                        # Try parsing as date string
+                        mutable_data[field] = datetime.strptime(mutable_data[field], '%Y-%m-%d').date()
+                    except (ValueError, TypeError):
+                        # If parsing fails, set to None
+                        mutable_data[field] = None
+        
+        # Handle datetime fields for writes
+        if 'FirstResponseAt' in mutable_data:
+            if mutable_data['FirstResponseAt'] == '':
+                mutable_data['FirstResponseAt'] = None
+            elif isinstance(mutable_data['FirstResponseAt'], str):
+                try:
+                    from datetime import datetime
+                    # Try parsing as datetime string
+                    mutable_data['FirstResponseAt'] = datetime.strptime(mutable_data['FirstResponseAt'], '%Y-%m-%d %H:%M:%S')
+                except (ValueError, TypeError):
+                    mutable_data['FirstResponseAt'] = None
+        
         # Set default values for required fields
         if not mutable_data.get('RiskOwner'):
             mutable_data['RiskOwner'] = 'System Owner'
-       
+        
         if not mutable_data.get('RiskStatus'):
             mutable_data['RiskStatus'] = 'Not Assigned'
-       
+        
         # Handle MitigationStatus - ensure it's a valid choice
         if 'MitigationStatus' in mutable_data:
             mitigation_status = mutable_data['MitigationStatus']
@@ -564,7 +599,7 @@ class RiskInstanceSerializer(serializers.ModelSerializer):
         else:
             # Set default if not provided
             mutable_data['MitigationStatus'] = 'Pending'
-       
+        
         # Handle integer fields that might be sent as strings
         integer_fields = ['ReportedBy', 'UserId', 'RiskId', 'IncidentId', 'ComplianceId', 'ReviewerId', 'ReviewerCount', 'RecurrenceCount']
         for field in integer_fields:
@@ -576,15 +611,15 @@ class RiskInstanceSerializer(serializers.ModelSerializer):
                         mutable_data[field] = None
                 except (ValueError, TypeError):
                     mutable_data[field] = None
-       
+        
         # Handle RiskMitigation if it's present but empty
         if 'RiskMitigation' in mutable_data and not mutable_data['RiskMitigation']:
             mutable_data['RiskMitigation'] = {}
-           
+            
         # Handle ModifiedMitigations if it's present but empty
         if 'ModifiedMitigations' in mutable_data and not mutable_data['ModifiedMitigations']:
             mutable_data['ModifiedMitigations'] = None
-           
+            
         # Handle RiskFormDetails if it's present but empty
         if 'RiskFormDetails' in mutable_data and not mutable_data['RiskFormDetails']:
             mutable_data['RiskFormDetails'] = None
@@ -648,26 +683,71 @@ class RiskInstanceSerializer(serializers.ModelSerializer):
         # Create the instance with cleaned data
         return RiskInstance.objects.create(**validated_data)
         
+    def get_MitigationDueDate(self, obj):
+        """Convert MitigationDueDate to string to avoid utcoffset error"""
+        if obj.MitigationDueDate:
+            try:
+                if hasattr(obj.MitigationDueDate, 'isoformat'):
+                    return obj.MitigationDueDate.isoformat()
+                elif hasattr(obj.MitigationDueDate, 'strftime'):
+                    return obj.MitigationDueDate.strftime('%Y-%m-%d')
+                return str(obj.MitigationDueDate)
+            except Exception as e:
+                print(f"Warning: Error converting MitigationDueDate: {e}")
+                return str(obj.MitigationDueDate) if obj.MitigationDueDate else None
+        return None
+    
+    def get_MitigationCompletedDate(self, obj):
+        """Convert MitigationCompletedDate to string to avoid utcoffset error"""
+        if obj.MitigationCompletedDate:
+            try:
+                if hasattr(obj.MitigationCompletedDate, 'isoformat'):
+                    return obj.MitigationCompletedDate.isoformat()
+                elif hasattr(obj.MitigationCompletedDate, 'strftime'):
+                    return obj.MitigationCompletedDate.strftime('%Y-%m-%d')
+                return str(obj.MitigationCompletedDate)
+            except Exception as e:
+                print(f"Warning: Error converting MitigationCompletedDate: {e}")
+                return str(obj.MitigationCompletedDate) if obj.MitigationCompletedDate else None
+        return None
+    
+    def get_CreatedAt(self, obj):
+        """Convert CreatedAt to string to avoid utcoffset error"""
+        if obj.CreatedAt:
+            try:
+                if hasattr(obj.CreatedAt, 'isoformat'):
+                    return obj.CreatedAt.isoformat()
+                elif hasattr(obj.CreatedAt, 'strftime'):
+                    return obj.CreatedAt.strftime('%Y-%m-%d')
+                return str(obj.CreatedAt)
+            except Exception as e:
+                print(f"Warning: Error converting CreatedAt: {e}")
+                return str(obj.CreatedAt) if obj.CreatedAt else None
+        return None
+    
+    def get_FirstResponseAt(self, obj):
+        """Convert FirstResponseAt to string to avoid utcoffset error"""
+        if obj.FirstResponseAt:
+            try:
+                if hasattr(obj.FirstResponseAt, 'isoformat'):
+                    return obj.FirstResponseAt.isoformat()
+                elif hasattr(obj.FirstResponseAt, 'strftime'):
+                    return obj.FirstResponseAt.strftime('%Y-%m-%d %H:%M:%S')
+                return str(obj.FirstResponseAt)
+            except Exception as e:
+                print(f"Warning: Error converting FirstResponseAt: {e}")
+                return str(obj.FirstResponseAt) if obj.FirstResponseAt else None
+        return None
+    
     def to_representation(self, instance):
         """
-        Override to ensure date fields are properly serialized
+        Override to ensure all fields are properly serialized
         """
-        # First get the default representation
+        # Get the default representation
         representation = super().to_representation(instance)
         
-        # Handle each date field to ensure it's properly formatted
-        for field in ['MitigationDueDate', 'MitigationCompletedDate']:
-            # If the field exists and has a value
-            if field in representation and representation[field] is not None:
-                # Convert date objects to strings to avoid serialization issues
-                if hasattr(instance, field):
-                    value = getattr(instance, field)
-                    if hasattr(value, 'isoformat'):
-                        try:
-                            representation[field] = value.isoformat()
-                        except:
-                            # If conversion fails, keep as is
-                            pass
+        # The SerializerMethodField methods above handle date/datetime fields
+        # This method can be used for any additional processing if needed
         
         return representation
 

@@ -63,7 +63,7 @@
     </div>
     
     <!-- Active Filter Warning -->
-    <div v-if="selectedFramework" class="filter-active-warning">
+    <!-- <div v-if="selectedFramework" class="filter-active-warning">
       <i class="fas fa-info-circle"></i>
       <span>
         <strong>Filter Active:</strong> Showing compliances for 
@@ -73,7 +73,7 @@
         <i class="fas fa-times"></i>
         Clear
       </button>
-    </div>
+    </div> -->
     
     <!-- Summary Cards Section -->
     <div class="compliance_summary_section">

@@ -1794,9 +1794,9 @@ export default {
       this.dataSourceMessage = 'Loading tasks...';
       
       if (riskDataService.hasRiskInstancesCache()) {
-        this.dataSourceMessage = 'Loaded base risk data from cache; fetching user-specific tasks...';
+        this.dataSourceMessage = '';
       } else {
-        this.dataSourceMessage = 'Fetching user-specific tasks from API...';
+        this.dataSourceMessage = '';
       }
       
       // Only fetch user risks and reviewer tasks, not notifications
@@ -1866,9 +1866,7 @@ export default {
         
         this.loading = false;
         this.error = null;
-        this.dataSourceMessage = riskDataService.hasRiskInstancesCache()
-          ? 'User-specific tasks refreshed from API (base data was prefetched)'
-          : 'User-specific tasks loaded directly from API';
+        this.dataSourceMessage = '';
         
         // Debug logging
         console.log('User risks fetched:', this.userRisks);
@@ -2055,8 +2053,45 @@ export default {
                     this.mitigationSteps = updatedSteps;
                   }
                   
-                  // Check if a reviewer is already assigned
-                  axios.get(API_ENDPOINTS.GET_ASSIGNED_REVIEWER(riskId))
+                  // First, check if reviewer info is already available in the risk object from the table
+                  const riskFromTable = this.userRisks.find(r => r.RiskInstanceId === riskId);
+                  let reviewerFound = false;
+                  
+                  if (riskFromTable) {
+                    // Check for reviewer in different possible field names
+                    if (riskFromTable.ReviewerId) {
+                      this.selectedReviewer = riskFromTable.ReviewerId;
+                      console.log(`Using reviewer ID from risk object: ${this.selectedReviewer}`);
+                      reviewerFound = true;
+                    } else if (riskFromTable.Reviewer) {
+                      // If we have reviewer name, try to find the ID from users array
+                      const reviewerUser = this.users.find(u => u.UserName === riskFromTable.Reviewer);
+                      if (reviewerUser) {
+                        this.selectedReviewer = reviewerUser.UserId;
+                        console.log(`Using reviewer ID from reviewer name: ${this.selectedReviewer}`);
+                      } else {
+                        this.selectedReviewer = riskFromTable.Reviewer;
+                        console.log(`Using reviewer name from risk object: ${this.selectedReviewer}`);
+                      }
+                      reviewerFound = true;
+                    } else if (riskFromTable.ReviewerName) {
+                      // If we have ReviewerName, try to find the ID from users array
+                      const reviewerUser = this.users.find(u => u.UserName === riskFromTable.ReviewerName);
+                      if (reviewerUser) {
+                        this.selectedReviewer = reviewerUser.UserId;
+                        console.log(`Using reviewer ID from ReviewerName: ${this.selectedReviewer}`);
+                      } else {
+                        this.selectedReviewer = riskFromTable.ReviewerName;
+                        console.log(`Using ReviewerName from risk object: ${this.selectedReviewer}`);
+                      }
+                      reviewerFound = true;
+                    }
+                  }
+                  
+                  // Only make API call if reviewer not found in risk object
+                  if (!reviewerFound) {
+                    // Check if a reviewer is already assigned
+                    axios.get(API_ENDPOINTS.GET_ASSIGNED_REVIEWER(riskId))
                     .then(reviewerResponse => {
                       console.log('Reviewer response:', reviewerResponse.data);
                       
@@ -2075,7 +2110,11 @@ export default {
                         console.log('Reviewer assignment error:', reviewerResponse.data.message);
                         
                         // Only show popup if it's a "no reviewer assigned" error, not a database error
-                        if (reviewerResponse.data.error === 'No reviewer assigned') {
+                        // But first check if reviewer exists in risk object
+                        const riskFromTable = this.userRisks.find(r => r.RiskInstanceId === riskId);
+                        const hasReviewerInTable = riskFromTable && (riskFromTable.ReviewerId || riskFromTable.Reviewer || riskFromTable.ReviewerName);
+                        
+                        if (reviewerResponse.data.error === 'No reviewer assigned' && !hasReviewerInTable) {
                           this.sendPushNotification({
                             title: 'No Reviewer Assigned',
                             message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
@@ -2084,22 +2123,26 @@ export default {
                             user_id: this.selectedUserId || 'default_user'
                           });
                           PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
+                          this.selectedReviewer = '';
+                        } else if (reviewerResponse.data.error === 'No reviewer assigned' && hasReviewerInTable) {
+                          // Reviewer exists in table but API returned error - use table data
+                          if (riskFromTable.ReviewerId) {
+                            this.selectedReviewer = riskFromTable.ReviewerId;
+                          } else if (riskFromTable.Reviewer) {
+                            const reviewerUser = this.users.find(u => u.UserName === riskFromTable.Reviewer);
+                            this.selectedReviewer = reviewerUser ? reviewerUser.UserId : riskFromTable.Reviewer;
+                          } else if (riskFromTable.ReviewerName) {
+                            const reviewerUser = this.users.find(u => u.UserName === riskFromTable.ReviewerName);
+                            this.selectedReviewer = reviewerUser ? reviewerUser.UserId : riskFromTable.ReviewerName;
+                          }
                         } else {
                           // Database error - show error popup
                           PopupService.error(`Database error: ${reviewerResponse.data.message}`, 'Error');
+                          this.selectedReviewer = '';
                         }
-                        this.selectedReviewer = '';
                       } else {
-                        // Empty response or unexpected format
-                        console.log('Empty or unexpected reviewer response');
-                        this.sendPushNotification({
-                          title: 'No Reviewer Assigned',
-                          message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
-                          category: 'risk',
-                          priority: 'high',
-                          user_id: this.selectedUserId || 'default_user'
-                        });
-                        PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
+                        // Empty response or unexpected format - don't show error popup, just log
+                        console.log('Empty or unexpected reviewer response from API');
                         this.selectedReviewer = '';
                       }
                       this.loadingMitigations = false;
@@ -2109,21 +2152,20 @@ export default {
                     })
                     .catch(error => {
                       console.error('Error fetching assigned reviewer:', error);
-                      // Send push notification for reviewer fetch error
-                      this.sendPushNotification({
-                        title: 'Reviewer Information Error',
-                        message: `Could not fetch reviewer information for risk ${this.selectedRiskId}. Please try again later.`,
-                        category: 'risk',
-                        priority: 'medium',
-                        user_id: this.selectedUserId || 'default_user'
-                      });
-                      PopupService.error('Could not fetch reviewer information. Please try again later.', 'Error');
+                      // Don't show error popup, just log the error
                       this.selectedReviewer = '';
                       this.loadingMitigations = false;
                       
-                      // Show the questionnaire section by default
+                      // Show the questionnaire section by default even if reviewer fetch fails
                       this.showQuestionnaire = true;
                     });
+                  } else {
+                    // Reviewer found in risk object, skip API call
+                    this.loadingMitigations = false;
+                    
+                    // Show the questionnaire section by default
+                    this.showQuestionnaire = true;
+                  }
                 })
                 .catch(error => {
                   console.error('Error fetching latest review:', error);
@@ -2292,38 +2334,68 @@ export default {
         return;
       }
       
-      // Validate reviewer is assigned
+      // Validate reviewer is assigned - first check risk object, then API
       if (!this.selectedReviewer || this.selectedReviewer === '') {
-        // Prevent infinite loops - only retry once
-        if (this.reviewerCheckAttempts >= 1) {
-          this.sendPushNotification({
-            title: 'No Reviewer Assigned',
-            message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
-            category: 'risk',
-            priority: 'high',
-            user_id: this.selectedUserId || 'default_user'
-          });
-          PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
-          this.reviewerCheckAttempts = 0; // Reset for next attempt
-          return;
+        // First check if reviewer exists in the risk object from the table
+        const riskFromTable = this.userRisks.find(r => r.RiskInstanceId === this.selectedRiskId);
+        
+        if (riskFromTable) {
+          if (riskFromTable.ReviewerId) {
+            this.selectedReviewer = riskFromTable.ReviewerId;
+          } else if (riskFromTable.Reviewer) {
+            const reviewerUser = this.users.find(u => u.UserName === riskFromTable.Reviewer);
+            this.selectedReviewer = reviewerUser ? reviewerUser.UserId : riskFromTable.Reviewer;
+          } else if (riskFromTable.ReviewerName) {
+            const reviewerUser = this.users.find(u => u.UserName === riskFromTable.ReviewerName);
+            this.selectedReviewer = reviewerUser ? reviewerUser.UserId : riskFromTable.ReviewerName;
+          }
         }
         
-        // Try to fetch reviewer one more time before showing error
-        this.reviewerCheckAttempts++;
-        axios.get(API_ENDPOINTS.GET_ASSIGNED_REVIEWER(this.selectedRiskId))
-          .then(reviewerResponse => {
-            if (reviewerResponse.data && (reviewerResponse.data.reviewer_name || reviewerResponse.data.reviewer_id)) {
-              // Reviewer found, update and retry submission
-              if (reviewerResponse.data.reviewer_id) {
-                this.selectedReviewer = reviewerResponse.data.reviewer_id;
+        // If still no reviewer, try API
+        if (!this.selectedReviewer || this.selectedReviewer === '') {
+          // Prevent infinite loops - only retry once
+          if (this.reviewerCheckAttempts >= 1) {
+            this.sendPushNotification({
+              title: 'No Reviewer Assigned',
+              message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
+              category: 'risk',
+              priority: 'high',
+              user_id: this.selectedUserId || 'default_user'
+            });
+            PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
+            this.reviewerCheckAttempts = 0; // Reset for next attempt
+            return;
+          }
+          
+          // Try to fetch reviewer one more time before showing error
+          this.reviewerCheckAttempts++;
+          axios.get(API_ENDPOINTS.GET_ASSIGNED_REVIEWER(this.selectedRiskId))
+            .then(reviewerResponse => {
+              if (reviewerResponse.data && (reviewerResponse.data.reviewer_name || reviewerResponse.data.reviewer_id)) {
+                // Reviewer found, update and retry submission
+                if (reviewerResponse.data.reviewer_id) {
+                  this.selectedReviewer = reviewerResponse.data.reviewer_id;
+                } else {
+                  this.selectedReviewer = reviewerResponse.data.reviewer_name;
+                }
+                this.reviewerCheckAttempts = 0; // Reset before retry
+                // Retry submission
+                this.submitForReview();
               } else {
-                this.selectedReviewer = reviewerResponse.data.reviewer_name;
+                // No reviewer found, show error
+                this.reviewerCheckAttempts = 0; // Reset
+                this.sendPushNotification({
+                  title: 'No Reviewer Assigned',
+                  message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
+                  category: 'risk',
+                  priority: 'high',
+                  user_id: this.selectedUserId || 'default_user'
+                });
+                PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
               }
-              this.reviewerCheckAttempts = 0; // Reset before retry
-              // Retry submission
-              this.submitForReview();
-            } else {
-              // No reviewer found, show error
+            })
+            .catch(error => {
+              console.error('Error fetching assigned reviewer:', error);
               this.reviewerCheckAttempts = 0; // Reset
               this.sendPushNotification({
                 title: 'No Reviewer Assigned',
@@ -2333,21 +2405,9 @@ export default {
                 user_id: this.selectedUserId || 'default_user'
               });
               PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
-            }
-          })
-          .catch(error => {
-            console.error('Error fetching assigned reviewer:', error);
-            this.reviewerCheckAttempts = 0; // Reset
-            this.sendPushNotification({
-              title: 'No Reviewer Assigned',
-              message: `No reviewer has been assigned to risk ${this.selectedRiskId}. Please contact your administrator.`,
-              category: 'risk',
-              priority: 'high',
-              user_id: this.selectedUserId || 'default_user'
             });
-            PopupService.warning('No reviewer has been assigned to this risk yet. Please contact your administrator.', 'No Reviewer Assigned');
-          });
-        return;
+          return;
+        }
       }
       
       // Reset reviewer check attempts on successful validation

@@ -7,8 +7,8 @@ const ENVIRONMENT = 'development';
  
 // API Base URLs for different environments
 const API_URLS = {
-  // aws: 'https://api-grc.vardaands.com',
-  aws: 'http://13.204.228.21:8000',
+  // aws: 'https://grc-backend.vardaands.com',
+  aws: 'https://grc-backend.vardaands.com',
   local: 'http://localhost:8000',
   development: 'http://127.0.0.1:8000'
 };
@@ -653,7 +653,9 @@ export const API_ENDPOINTS = {
   CHANGE_MGMT_MATCH_COMPLIANCES: (frameworkId) => `${API_BASE_URL}/api/change-management/framework/${frameworkId}/match-compliances/`,
   CHANGE_MGMT_ADD_COMPLIANCE: (frameworkId) => `${API_BASE_URL}/api/change-management/framework/${frameworkId}/add-compliance/`,
   CHANGE_MGMT_CHECK_UPDATES: (frameworkId) => `${API_BASE_URL}/api/change-management/framework/${frameworkId}/check-updates/`,
-  CHANGE_MGMT_SCAN_DOWNLOADS: `${API_BASE_URL}/api/change-management/scan-downloads/`
+  CHANGE_MGMT_SCAN_DOWNLOADS: `${API_BASE_URL}/api/change-management/scan-downloads/`,
+  CHANGE_MGMT_DOCUMENT_INFO: (frameworkId) => `${API_BASE_URL}/api/change-management/framework/${frameworkId}/document-info/`,
+  CHANGE_MGMT_START_ANALYSIS: (frameworkId) => `${API_BASE_URL}/api/change-management/framework/${frameworkId}/start-analysis/`
 };
  
 // Axios instance configuration with JWT authentication

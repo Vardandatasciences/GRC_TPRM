@@ -381,7 +381,7 @@ export default {
           console.log('✅ [RiskRegisterList] Using cached risk data');
           this.risks = riskDataService.getData('risks') || [];
           console.log(`[RiskRegisterList] Loaded ${this.risks.length} risks from cache`);
-          this.dataSourceMessage = `Loaded ${this.risks.length} risks from cache (prefetched on Home page)`;
+          this.dataSourceMessage = '';
         } else {
           // FALLBACK: If no cached data, fetch from API
           console.log('⚠️ [RiskRegisterList] No cached data found, fetching from API...');
@@ -394,7 +394,7 @@ export default {
             this.risks = response.data
           }
           console.log('Fetched risks from API:', this.risks.map(r => ({ id: r.RiskId, createdAt: r.CreatedAt })))
-          this.dataSourceMessage = `Loaded ${this.risks.length} risks directly from API (cache unavailable)`;
+          this.dataSourceMessage = '';
         }
         
         this.loading = false
@@ -424,6 +424,12 @@ export default {
     },
     async exportRiskRegister() {
       if (!this.selectedExportFormat) return;
+      
+      const startTime = Date.now();
+      console.log(`🚀 [FRONTEND] Export started at ${new Date().toISOString()}`);
+      console.log(`📊 [FRONTEND] Export format: ${this.selectedExportFormat}`);
+      console.log(`📊 [FRONTEND] Data count: ${this.tableData.length} records`);
+      
       try {
         // Prepare export data (filtered risks)
         const exportData = this.tableData;
@@ -433,12 +439,22 @@ export default {
           user_id: 'default_user',
           file_name: 'risk_register_export'
         };
-        // Increase timeout for long-running exports
+        
+        console.log(`📦 [FRONTEND] Payload size: ${JSON.stringify(payload).length} characters`);
+        console.log(`⏱️  [FRONTEND] Request timeout: 600000ms (10 minutes)`);
+        console.log(`🌐 [FRONTEND] Sending request to: ${API_ENDPOINTS.EXPORT_RISK_REGISTER}`);
+        
+        // Increased timeout for large exports (10 minutes) - PDF conversion + S3 upload can take time
         const response = await axiosInstance.post(
           API_ENDPOINTS.EXPORT_RISK_REGISTER,
           payload,
-          { timeout: 180000 } // 3 minutes
+          { timeout: 600000 } // 10 minutes for large PDF exports
         );
+        
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`✅ [FRONTEND] Response received after ${elapsed} seconds`);
+        console.log(`📊 [FRONTEND] Response status: ${response.status}`);
+        console.log(`📊 [FRONTEND] Response data:`, response.data);
         const result = response.data;
         if (result.success && result.file_url && result.file_name) {
           // Try to open the file URL in a new tab, fallback to download if it fails
@@ -495,6 +511,21 @@ export default {
           }
         }
       } catch (error) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.error(`❌ [FRONTEND] Export failed after ${elapsed} seconds`);
+        console.error(`❌ [FRONTEND] Error type: ${error.constructor.name}`);
+        console.error(`❌ [FRONTEND] Error message: ${error.message}`);
+        console.error(`❌ [FRONTEND] Full error:`, error);
+        
+        if (error.response) {
+          console.error(`❌ [FRONTEND] Response status: ${error.response.status}`);
+          console.error(`❌ [FRONTEND] Response data:`, error.response.data);
+        }
+        
+        if (error.code === 'ECONNABORTED') {
+          console.error(`❌ [FRONTEND] Request timeout - took longer than 180 seconds`);
+        }
+        
         if (this.$popup) {
           this.$popup.error('Export error: ' + error.message, 'Export Error');
         } else if (window.PopupService) {

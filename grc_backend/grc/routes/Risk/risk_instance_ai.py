@@ -59,10 +59,10 @@ OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = getattr(settings, 'OPENAI_MODEL', 'gpt-3.5-turbo')
 
 if not OPENAI_API_KEY:
-    print("[WARNING] OPENAI_API_KEY not found in Django settings!")
+    print("⚠️  WARNING: OPENAI_API_KEY not found in Django settings!")
     print("   Please set OPENAI_API_KEY in your .env file.")
 else:
-    print("[INFO] OpenAI Configuration for Risk Instance AI:")
+    print(f"🌐 OpenAI Configuration for Risk Instance AI:")
     print(f"   API URL: {OPENAI_API_URL}")
     print(f"   Model: {OPENAI_MODEL}")
     print(f"   API Key: {'*' * (len(OPENAI_API_KEY) - 4) + OPENAI_API_KEY[-4:]}")
@@ -232,26 +232,59 @@ def call_openai_json(prompt: str, retries: int = 3, timeout: int = 120) -> Any:
         "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
     
+    # Models that support json_object response_format:
+    # gpt-4-turbo-preview, gpt-4-0125-preview, gpt-3.5-turbo-1106, gpt-4-turbo, gpt-4o
+    # Note: gpt-4o-mini does NOT support json_object format
+    # Clean model name - strip quotes and whitespace
+    model_clean = str(OPENAI_MODEL).strip().strip('"').strip("'")
+    model_lower = model_clean.lower()
+    
+    print(f"🔍 Model check - Original: '{OPENAI_MODEL}', Cleaned: '{model_clean}', Lower: '{model_lower}'")
+    
+    # Explicitly exclude gpt-4o-mini first (it contains "gpt-4o" but doesn't support json_object)
+    if "gpt-4o-mini" in model_lower:
+        supports_json_format = False
+        print(f"🔍 Model '{model_clean}' is gpt-4o-mini - NOT adding response_format")
+    else:
+        # Check if model exactly matches or starts with a supported model
+        models_with_json_support = [
+            "gpt-4-turbo-preview", "gpt-4-0125-preview", "gpt-3.5-turbo-1106", 
+            "gpt-4-turbo", "gpt-4o"
+        ]
+        supports_json_format = any(
+            model_lower == model.lower() or model_lower.startswith(model.lower() + "-")
+            for model in models_with_json_support
+        )
+        print(f"🔍 Model '{model_clean}' supports_json_format check result: {supports_json_format}")
+    
     payload = {
-        "model": OPENAI_MODEL,
+        "model": model_clean,  # Use cleaned model name
         "messages": [
             {"role": "system", "content": "You are a GRC (Governance, Risk, and Compliance) analyst expert. Always return valid JSON responses as requested."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"} if "gpt-4" in OPENAI_MODEL or "gpt-3.5-turbo-1106" in OPENAI_MODEL else None
+        "temperature": 0.1
     }
     
-    # Remove response_format if None (for older models)
-    if payload["response_format"] is None:
-        del payload["response_format"]
+    # Only add response_format for models that support it
+    if supports_json_format:
+        payload["response_format"] = {"type": "json_object"}
+        print(f"✅ Adding response_format: json_object (model '{model_clean}' supports it)")
+    else:
+        print(f"⚠️  NOT adding response_format (model '{model_clean}' does not support json_object)")
     
     print(f"🤖 Calling OpenAI API at {OPENAI_API_URL}")
-    print(f"🤖 Model: {OPENAI_MODEL}")
+    print(f"🤖 Model: {model_clean}")
     print(f"🤖 Prompt length: {len(prompt)} chars")
+    print(f"🔍 Payload keys: {list(payload.keys())}")
+    if 'response_format' in payload:
+        print(f"🔍 response_format value: {payload['response_format']}")
+    else:
+        print(f"🔍 response_format: NOT in payload")
     
     for attempt in range(retries):
         print(f"🤖 Attempt {attempt + 1}/{retries}...")
+        resp = None
         try:
             resp = requests.post(OPENAI_API_URL, json=payload, headers=headers, timeout=timeout)
             resp.raise_for_status()
@@ -278,6 +311,44 @@ def call_openai_json(prompt: str, retries: int = 3, timeout: int = 120) -> Any:
             
         except requests.exceptions.HTTPError as he:
             print(f"❌ HTTP error on attempt {attempt + 1}: {he}")
+            
+            # Ensure resp is available
+            if resp is None:
+                print(f"⚠️  Response object is None - error occurred before response was received")
+                raise RuntimeError(f"OpenAI API HTTP error: {he}")
+            
+            print(f"🔍 Status Code: {resp.status_code}")
+            
+            # Log the actual error response from OpenAI - be more robust
+            try:
+                # Try to get response text first
+                response_text = resp.text if hasattr(resp, 'text') else 'N/A'
+                print(f"🔍 Raw response text (first 1000 chars): {response_text[:1000]}")
+                
+                # Try to parse as JSON
+                try:
+                    error_response = resp.json()
+                    error_message = error_response.get('error', {})
+                    if isinstance(error_message, dict):
+                        error_detail = error_message.get('message', 'Unknown error')
+                        error_type = error_message.get('type', 'Unknown type')
+                        error_code = error_message.get('code', 'Unknown code')
+                        print(f"🔍 OpenAI Error Details:")
+                        print(f"   Type: {error_type}")
+                        print(f"   Code: {error_code}")
+                        print(f"   Message: {error_detail}")
+                        print(f"   Full error object: {error_message}")
+                    else:
+                        print(f"🔍 OpenAI Error Response (non-dict): {error_response}")
+                except (ValueError, AttributeError, json.JSONDecodeError) as json_err:
+                    print(f"⚠️  Response is not valid JSON: {json_err}")
+                    print(f"   Response text: {response_text[:500]}")
+            except Exception as e:
+                print(f"⚠️  Could not parse error response: {e}")
+                print(f"   Exception type: {type(e).__name__}")
+                import traceback
+                print(f"   Traceback: {traceback.format_exc()}")
+            
             if resp.status_code == 401:
                 raise RuntimeError("OpenAI API authentication failed. Please check your OPENAI_API_KEY.")
             elif resp.status_code == 429:
@@ -290,6 +361,16 @@ def call_openai_json(prompt: str, retries: int = 3, timeout: int = 120) -> Any:
                 if attempt < retries - 1:
                     time.sleep(2)
                     continue
+            elif resp.status_code == 400:
+                # For 400 errors, log the payload to help debug
+                print(f"🔍 Debugging 400 error - Payload being sent:")
+                print(f"   Model: {payload.get('model')}")
+                print(f"   Has response_format: {'response_format' in payload}")
+                if 'response_format' in payload:
+                    print(f"   response_format value: {payload.get('response_format')}")
+                print(f"   Messages count: {len(payload.get('messages', []))}")
+                print(f"   Temperature: {payload.get('temperature')}")
+            
             raise RuntimeError(f"OpenAI API HTTP error: {he}")
             
         except requests.exceptions.ConnectionError as ce:

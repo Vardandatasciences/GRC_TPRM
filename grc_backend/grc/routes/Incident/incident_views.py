@@ -13,7 +13,7 @@ from ...serializers import (
 )
 from ...models import Incident, AuditFinding, Users, Workflow, Compliance, Framework, PolicyVersion, PolicyApproval, Policy, SubPolicy, RiskInstance, LastChecklistItemVerified, IncidentApproval, ExportTask, CategoryBusinessUnit, GRCLog
 from ...routes.Global.notification_service import NotificationService
-from ...routes.Global.export_service1 import export_data
+from ...routes.Global.s3_fucntions import export_data
 # Import KPI functions from separate module
 from .kpis_incidents import (
     incident_mttd, incident_mttr, incident_mttc, incident_mttrv,
@@ -3426,7 +3426,7 @@ from rest_framework.response import Response
 
 from ...models import Incident
 from ...serializers import IncidentSerializer
-from ...routes.Global.export_service1 import export_data
+from ...routes.Global.s3_fucntions import export_data
 
 @csrf_exempt
 @api_view(['POST'])

@@ -419,7 +419,7 @@ export default {
         const cachedRisks = riskDataService.getData('riskInstances') || [];
         const clonedRisks = JSON.parse(JSON.stringify(cachedRisks));
         this.handleRiskResponse(clonedRisks);
-        this.dataSourceMessage = `Loaded ${clonedRisks.length} risks from cache (prefetched on Home page)`;
+        this.dataSourceMessage = ``;
       };
       
       const fetchFromApi = () => {
@@ -435,7 +435,7 @@ export default {
             }
             
             this.handleRiskResponse(apiRisks);
-            this.dataSourceMessage = `Loaded ${apiRisks.length} risks directly from API (cache unavailable)`;
+            this.dataSourceMessage = ``;
             riskDataService.setData('riskInstances', apiRisks);
           });
       };
@@ -461,9 +461,7 @@ export default {
         } finally {
           const needsApiFetch = !this.error && (!this.risks || this.risks.length === 0);
           if (needsApiFetch) {
-            this.dataSourceMessage = riskDataService.hasRiskInstancesCache()
-              ? 'No risks found in cache; fetching from API...'
-              : 'Fetching risks from API...';
+            this.dataSourceMessage = '';
             this.loading = true;
             fetchFromApi()
               .catch(apiError => {

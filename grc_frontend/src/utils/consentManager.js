@@ -39,7 +39,9 @@ export async function checkConsentRequired(actionType) {
     const token = localStorage.getItem('access_token');
 
     if (!token) {
-      console.error('❌ [Consent] No access token found!');
+      // Don't log as error - this is expected when user is logged out
+      // Just return without requiring consent (fail-open behavior)
+      console.warn('⚠️ [Consent] No access token found - skipping consent check');
       return { required: false, config: null };
     }
     

@@ -424,10 +424,10 @@ export default {
       )
     })
 
-    // Check for access token in URL params after OAuth redirect
+    // Check for OAuth success or error in URL params after OAuth redirect
     onMounted(async () => {
       const urlParams = new URLSearchParams(window.location.search)
-      const token = urlParams.get('token')
+      const success = urlParams.get('success')
       const loadStoredData = urlParams.get('loadStoredData')
       const errorParam = urlParams.get('error')
       
@@ -435,22 +435,33 @@ export default {
       if (errorParam) {
         console.error('❌ OAuth error received:', errorParam)
         error.value = `OAuth failed: ${errorParam}`
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname)
         return
       }
       
-      if (token) {
-        console.log('🎉 Access token found in URL from Django OAuth redirect:', token.substring(0, 20) + '...')
-        accessToken.value = token
+      // Handle OAuth success - load stored data from database
+      if (success === 'true') {
+        console.log('🎉 OAuth successful! Loading stored Jira data from database...')
         
-        // Save OAuth connection to backend
-        await saveJiraConnection(token)
+        // Load stored data first (this will set accessToken and resources)
+        await loadStoredProjectsData()
         
-        // Fetch available Jira resources and auto-select the first one
-        await fetchJiraResourcesAndAutoConnect()
+        // If resources were loaded, auto-select the first one
+        if (jiraResources.value && jiraResources.value.length > 0) {
+          // If only one resource, it's already auto-selected by loadStoredProjectsData
+          // If multiple, fetchJiraResourcesAndAutoConnect will handle it
+          if (jiraResources.value.length > 1) {
+            await fetchJiraResourcesAndAutoConnect()
+          }
+        } else {
+          // If no resources in stored data, fetch them fresh
+          await fetchJiraResourcesAndAutoConnect()
+        }
         
         // Clean up URL
         window.history.replaceState({}, document.title, window.location.pathname)
-        console.log('✅ Token set and URL cleaned up')
+        console.log('✅ OAuth success handled and URL cleaned up')
       } else if (loadStoredData === 'true') {
         console.log('📊 Loading stored Jira data from database...')
         await loadStoredProjectsData()
@@ -667,12 +678,6 @@ export default {
 
     // After authentication, fetch the projects from Jira API
     const handleFetchProjects = async () => {
-      if (!accessToken.value) {
-        console.error('No access token available')
-        error.value = 'No access token available'
-        return
-      }
-
       if (!selectedCloudId.value) {
         console.error('No cloud ID selected')
         error.value = 'Please select a Jira account first'
@@ -686,8 +691,25 @@ export default {
       
       try {
         console.log('📡 Fetching projects from Django backend...')
-        console.log('Access token:', accessToken.value.substring(0, 20) + '...')
         console.log('Cloud ID:', selectedCloudId.value)
+        
+        // Prepare request body - only include access_token if it's a real token (not a flag)
+        const requestBody = {
+          user_id: getCurrentUserId(),
+          cloud_id: selectedCloudId.value,
+          action: 'fetch_projects'
+        }
+        
+        // Only include access_token if it's a real token (not a flag like 'stored_data_token' or 'oauth_success')
+        if (accessToken.value && 
+            accessToken.value !== 'stored_data_token' && 
+            accessToken.value !== 'oauth_success' &&
+            accessToken.value.length > 20) {
+          requestBody.access_token = accessToken.value
+          console.log('Using access token from frontend')
+        } else {
+          console.log('No valid access token in frontend, backend will use stored connection token')
+        }
         
         // Call Django backend to fetch Jira projects
         const response = await fetch(API_ENDPOINTS.JIRA_PROJECTS, {
@@ -695,12 +717,7 @@ export default {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            user_id: getCurrentUserId(),
-            access_token: accessToken.value,
-            cloud_id: selectedCloudId.value,
-            action: 'fetch_projects'
-          })
+          body: JSON.stringify(requestBody)
         })
         
         if (!response.ok) {

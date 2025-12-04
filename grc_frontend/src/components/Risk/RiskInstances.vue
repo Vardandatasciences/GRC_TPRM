@@ -475,12 +475,12 @@ export default {
         if (riskDataService.hasRiskInstancesCache()) {
           console.log('✅ [RiskInstances] Using cached risk instances')
           this.instances = riskDataService.getData('riskInstances') || []
-          this.dataSourceMessage = `Loaded ${this.instances.length} risk instances from cache (prefetched on Home page)`
+          this.dataSourceMessage = ``
         } else {
           console.log('⚠️ [RiskInstances] No cached data found, fetching from API...')
           const response = await axios.get(API_ENDPOINTS.RISK_INSTANCES)
           this.instances = response.data
-          this.dataSourceMessage = `Loaded ${this.instances.length} risk instances directly from API (cache unavailable)`
+          this.dataSourceMessage = ``
 
           // Update cache so subsequent pages benefit
           riskDataService.setData('riskInstances', this.instances)

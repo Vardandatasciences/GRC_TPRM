@@ -15,7 +15,7 @@ from django.db.models import Q
 import traceback
 import sys
 from datetime import datetime, date, timedelta
-from ...routes.Global.export_service1 import export_data, save_export_record, update_export_status, update_export_url, update_export_metadata
+from ...routes.Global.s3_fucntions import export_data
 import re
 from django.utils import timezone
 from datetime import timedelta
@@ -6262,7 +6262,7 @@ def export_all_frameworks_policies(request):
     Export all frameworks, their policies, and subpolicies to the requested format.
     """
     from ...models import Framework, Policy, SubPolicy
-    from ...routes.Global.export_service1 import export_data
+    from ...routes.Global.s3_fucntions import export_data
     from ...utils import send_log, get_client_ip
     from django.utils import timezone
     import traceback
@@ -10724,8 +10724,10 @@ def upload_policy_document(request):
     """
     # Import security modules
     from django.utils.html import escape as escape_html
+    from django.conf import settings
     import logging
     import os
+    from pathlib import Path
     
     
     # Configure secure logging to prevent log injection
@@ -10768,17 +10770,25 @@ def upload_policy_document(request):
         
         # Security: Sanitize inputs and convert back to strings for MySQL compatibility
         user_id = str(escape_html(str(user_id)))
-        file_name = str(escape_html(file_name))
+        # For file_name, sanitize for filesystem use (remove path separators and dangerous chars)
+        # Convert to plain string to avoid SafeString issues with Path operations
+        file_name = str(file_name).replace('/', '_').replace('\\', '_').replace('..', '_')
+        # Remove any remaining dangerous characters (re is already imported at top of file)
+        file_name = re.sub(r'[<>:"|?*]', '_', file_name)
         doc_type = str(escape_html(doc_type))
         policy_name = str(escape_html(policy_name))
         
-        # Save file temporarily
-        temp_file_path = os.path.join('temp_uploads', file_name)
-        os.makedirs(os.path.dirname(temp_file_path), exist_ok=True)
+        # Save file temporarily - use MEDIA_ROOT from Django settings for absolute path
+        # This matches the Docker volume mount: -v ~/MEDIA_ROOT:/app/MEDIA_ROOT
+        temp_upload_dir = Path(settings.MEDIA_ROOT) / 'temp_uploads'
+        temp_upload_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure file_name is a plain string (not SafeString) for Path operations
+        temp_file_path = temp_upload_dir / str(file_name)
+        temp_file_path_str = str(temp_file_path)
         
-        logger.info(f"Saving file temporarily to: {temp_file_path}")
+        logger.info(f"Saving file temporarily to: {temp_file_path_str}")
         
-        with open(temp_file_path, 'wb+') as destination:
+        with open(temp_file_path_str, 'wb+') as destination:
             for chunk in file.chunks():
                 destination.write(chunk)
         
@@ -10802,7 +10812,7 @@ def upload_policy_document(request):
         # Upload file to S3
         logger.info(f"Starting S3 upload for file: {file_name}")
         upload_result = s3_client.upload(
-            file_path=temp_file_path,
+            file_path=temp_file_path_str,
             user_id=user_id,
             custom_file_name=file_name,
             module='Policy'
@@ -10810,8 +10820,8 @@ def upload_policy_document(request):
         logger.info(f"S3 upload completed. Result: {upload_result}")
         
         # Clean up temporary file
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        if os.path.exists(temp_file_path_str):
+            os.remove(temp_file_path_str)
             logger.info("Cleaned up temporary file")
         
         if upload_result.get('success'):
@@ -10847,6 +10857,14 @@ def upload_policy_document(request):
         else:
             logger.error(f"Upload failed: {upload_result.get('error')}")
             
+            # Clean up temporary file on failure
+            if 'temp_file_path_str' in locals() and os.path.exists(temp_file_path_str):
+                try:
+                    os.remove(temp_file_path_str)
+                    logger.info("Cleaned up temporary file after upload failure")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp file: {cleanup_error}")
+            
             # Log upload failure
             send_log(
                 module="Policy",
@@ -10866,6 +10884,14 @@ def upload_policy_document(request):
             
     except Exception as e:
         logger.error(f"Unexpected error during upload: {str(e)}", exc_info=True)
+        
+        # Clean up temporary file on error
+        if 'temp_file_path_str' in locals() and os.path.exists(temp_file_path_str):
+            try:
+                os.remove(temp_file_path_str)
+                logger.info("Cleaned up temporary file after error")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to clean up temp file: {cleanup_error}")
         
         # Log unexpected error
         send_log(

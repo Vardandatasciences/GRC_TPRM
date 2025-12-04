@@ -633,11 +633,18 @@ export default {
           formData.append('audit_id', this.$route.params.auditId);
           formData.append('fileName', file.name);
 
-          // Use S3 upload endpoint
+          // Use S3 upload endpoint with JWT token
+          const token = localStorage.getItem('access_token');
+          const headers = {};
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+          
           const response = await fetch(API_ENDPOINTS.UPLOAD_EVIDENCE_S3, {
             method: 'POST',
             body: formData,
-            credentials: 'include'
+            credentials: 'include',
+            headers: headers
           });
 
           if (!response.ok) {
@@ -737,11 +744,18 @@ export default {
           formData.append('audit_id', this.$route.params.auditId);
           formData.append('fileName', file.name);
 
-          // Use S3 upload endpoint
+          // Use S3 upload endpoint with JWT token
+          const token = localStorage.getItem('access_token');
+          const headers = {};
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+          
           const response = await fetch(API_ENDPOINTS.UPLOAD_EVIDENCE_S3, {
             method: 'POST',
             body: formData,
-            credentials: 'include'
+            credentials: 'include',
+            headers: headers
           });
 
           if (!response.ok) {

@@ -12,7 +12,7 @@ from django.shortcuts import get_object_or_404, render, redirect
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods, require_GET
-from django.db import transaction, connection
+from django.db import transaction, connection, connections
 from django.core.mail import send_mail, EmailMessage
 from django.template.loader import render_to_string
 from django.conf import settings
@@ -2586,6 +2586,80 @@ class AwardResponseView(APIView):
                 'error': f'Failed to get award notification: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    def _get_next_vendor_user_id(self):
+        """
+        Get the next available user_id for a vendor by querying rbac_tprm table
+        in tprm_integration schema. Searches all vendors, sorts user_ids, and
+        returns the next auto-incremented user_id.
+        
+        Also checks the users table to ensure the user_id doesn't already exist.
+        
+        Returns:
+            int: The next available user_id for a vendor
+        """
+        try:
+            # Use tprm connection to access tprm_integration schema
+            tprm_connection = connections['tprm'] if 'tprm' in connections.databases else connection
+            
+            with tprm_connection.cursor() as cursor:
+                # Query rbac_tprm table for all vendors (Role = 'Vendor')
+                # Get all user_ids and sort them
+                cursor.execute("""
+                    SELECT UserId 
+                    FROM rbac_tprm 
+                    WHERE Role = 'Vendor'
+                    ORDER BY UserId ASC
+                """)
+                
+                vendor_user_ids = [row[0] for row in cursor.fetchall()]
+                
+                # Determine the next user_id
+                if not vendor_user_ids:
+                    # No vendors exist yet, start with user_id = 1
+                    candidate_user_id = 1
+                    print(f"[INFO] No existing vendors found in rbac_tprm. Starting with user_id: {candidate_user_id}")
+                else:
+                    # Sort user_ids (they should already be sorted from query, but ensure it)
+                    vendor_user_ids.sort()
+                    # Get the maximum user_id and increment by 1
+                    max_user_id = max(vendor_user_ids)
+                    candidate_user_id = max_user_id + 1
+                    print(f"[INFO] Found {len(vendor_user_ids)} vendors in rbac_tprm. Max user_id: {max_user_id}, Candidate user_id: {candidate_user_id}")
+                
+                # Check if this user_id already exists in users table
+                # Use default connection for users table (users table is in default database)
+                with connection.cursor() as users_cursor:
+                    users_cursor.execute("SELECT UserId FROM users WHERE UserId = %s", [candidate_user_id])
+                    existing_user = users_cursor.fetchone()
+                    
+                    if existing_user:
+                        # User_id already exists in users table, find the next available
+                        print(f"[WARN] UserId {candidate_user_id} already exists in users table. Finding next available...")
+                        # Get max user_id from users table
+                        users_cursor.execute("SELECT MAX(UserId) FROM users")
+                        max_users_id = users_cursor.fetchone()[0]
+                        if max_users_id:
+                            candidate_user_id = max(max_users_id, candidate_user_id) + 1
+                        else:
+                            candidate_user_id += 1
+                        print(f"[INFO] Adjusted candidate user_id to: {candidate_user_id}")
+                
+                return candidate_user_id
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to get next vendor user_id from rbac_tprm: {str(e)}")
+            # Fallback: if query fails, try to get max from users table
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT MAX(UserId) FROM users")
+                    max_id = cursor.fetchone()[0]
+                    if max_id:
+                        return max_id + 1
+            except:
+                pass
+            # Final fallback: start with 1
+            return 1
+
     def _create_vendor_credentials(self, notification):
         """
         Create vendor user credentials, RBAC permissions, and temp_vendor record
@@ -2661,7 +2735,68 @@ class AwardResponseView(APIView):
                     user_id, existing_username = existing_user
                     username = get_unique_username(normalized_username, user_id)
                     print(f"[INFO] User already exists with UserId: {user_id}")
-                    # Update username and password for existing user with newly generated credentials
+                    
+                    # Get tprm connection for tprm_integration database
+                    tprm_connection = connections['tprm'] if 'tprm' in connections.databases else connection
+                    
+                    # Update user in tprm_integration.users table
+                    try:
+                        with tprm_connection.cursor() as tprm_users_cursor:
+                            # Check if user exists in tprm_integration
+                            tprm_users_cursor.execute("SELECT UserId FROM users WHERE UserId = %s", [user_id])
+                            existing_tprm_user = tprm_users_cursor.fetchone()
+                            
+                            if existing_tprm_user:
+                                # Update existing user in tprm_integration
+                                tprm_users_cursor.execute(
+                                    """
+                                    UPDATE users
+                                    SET UserName = %s,
+                                        Password = %s,
+                                        Email = %s,
+                                        FirstName = %s,
+                                        LastName = %s,
+                                        UpdatedAt = %s
+                                    WHERE UserId = %s
+                                    """,
+                                    [
+                                        username,
+                                        generated_password,
+                                        vendor_email,
+                                        vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                        vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                        timezone.now(),
+                                        user_id,
+                                    ],
+                                )
+                                print(f"[INFO] Updated user with UserId: {user_id} in tprm_integration.users table")
+                            else:
+                                # Create user in tprm_integration if it doesn't exist
+                                tprm_users_cursor.execute(
+                                    """
+                                    INSERT INTO users (
+                                        UserId, UserName, Email, Password, FirstName, LastName,
+                                        IsActive, CreatedAt, UpdatedAt
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    """,
+                                    [
+                                        user_id,
+                                        username,
+                                        vendor_email,
+                                        generated_password,
+                                        vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                        vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                        'Y',
+                                        timezone.now(),
+                                        timezone.now()
+                                    ],
+                                )
+                                print(f"[INFO] Created user with UserId: {user_id} in tprm_integration.users table")
+                    except Exception as tprm_user_error:
+                        print(f"[WARN] Failed to update/create user in tprm_integration.users: {str(tprm_user_error)}")
+                        logger.warning(f"Failed to sync user to tprm_integration: {str(tprm_user_error)}")
+                    
+                    # Also update username and password for existing user in grc2 with newly generated credentials
                     cursor.execute(
                         """
                         UPDATE users
@@ -2677,142 +2812,342 @@ class AwardResponseView(APIView):
                             user_id,
                         ],
                     )
+                    
+                    # Also update user in grc2 database with SHA256 hashed password
+                    try:
+                        # Hash password with SHA256 for grc2 database
+                        password_hash_sha256 = hashlib.sha256(generated_password.encode()).hexdigest()
+                        
+                        # Use default connection (grc2 database) to update user
+                        with connection.cursor() as grc2_cursor:
+                            grc2_cursor.execute("""
+                                UPDATE users
+                                SET UserName = %s,
+                                    Password = %s,
+                                    Email = %s,
+                                    FirstName = %s,
+                                    LastName = %s,
+                                    UpdatedAt = %s
+                                WHERE UserId = %s
+                            """, [
+                                username,
+                                password_hash_sha256,  # SHA256 hashed password
+                                vendor_email,
+                                vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                timezone.now(),
+                                user_id
+                            ])
+                            
+                            # If no rows were updated, user doesn't exist in grc2, so create it
+                            if grc2_cursor.rowcount == 0:
+                                grc2_cursor.execute("""
+                                    INSERT INTO users (
+                                        UserId, UserName, Email, Password, FirstName, LastName,
+                                        IsActive, CreatedAt, UpdatedAt
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, [
+                                    user_id,
+                                    username,
+                                    vendor_email,
+                                    password_hash_sha256,  # SHA256 hashed password
+                                    vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                    vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                    'Y',
+                                    timezone.now(),
+                                    timezone.now()
+                                ])
+                                print(f"[INFO] Created user with UserId: {user_id} in grc2 database (user existed in tprm_integration but not in grc2)")
+                            else:
+                                print(f"[INFO] Updated user with UserId: {user_id} in grc2 database with SHA256 hashed password")
+                                
+                            # Create/Update RBAC entry in grc2.rbac table for existing user
+                            try:
+                                grc2_cursor.execute("SELECT RBACId FROM rbac WHERE UserId = %s", [user_id])
+                                existing_rbac_grc2 = grc2_cursor.fetchone()
+                                
+                                if not existing_rbac_grc2:
+                                    # Insert new RBAC entry for vendor in grc2
+                                    grc2_cursor.execute("""
+                                        INSERT INTO rbac (
+                                            UserId, UserName, Role, IsActive, CreatedAt, UpdatedAt
+                                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                                    """, [
+                                        user_id,
+                                        username,
+                                        'End User',  # Default role for vendor users in GRC system
+                                        'Y',
+                                        timezone.now(),
+                                        timezone.now()
+                                    ])
+                                    print(f"[INFO] Created RBAC entry in grc2.rbac for existing UserId: {user_id}")
+                                else:
+                                    # Update existing RBAC entry
+                                    grc2_cursor.execute("""
+                                        UPDATE rbac
+                                        SET UserName = %s,
+                                            UpdatedAt = %s
+                                        WHERE UserId = %s
+                                    """, [
+                                        username,
+                                        timezone.now(),
+                                        user_id
+                                    ])
+                                    print(f"[INFO] Updated RBAC entry in grc2.rbac for existing UserId: {user_id}")
+                            except Exception as rbac_error:
+                                # Log error but don't fail the entire operation
+                                print(f"[WARN] Failed to create/update RBAC entry in grc2.rbac for existing user: {str(rbac_error)}")
+                                logger.warning(f"Failed to create RBAC entry in grc2 for existing vendor user: {str(rbac_error)}")
+                                
+                    except Exception as grc2_error:
+                        # Log error but don't fail the entire operation
+                        print(f"[WARN] Failed to update/create user in grc2 database: {str(grc2_error)}")
+                        logger.warning(f"Failed to sync existing vendor user to grc2 database: {str(grc2_error)}")
                 else:
-                    # 1. Create user in users table
+                    # 1. Get next vendor user_id from rbac_tprm table
+                    user_id = self._get_next_vendor_user_id()
+                    
+                    # 2. Create user in users table of tprm_integration database
                     username = get_unique_username(normalized_username)
 
-                    cursor.execute("""
-                        INSERT INTO users (
-                            UserName, Email, Password, FirstName, LastName,
-                            IsActive, CreatedAt, UpdatedAt
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, [
-                        username,
-                        vendor_email,
-                        generated_password,  # In production, this should be hashed
-                        vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
-                        vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
-                        'Y',
-                        timezone.now(),
-                        timezone.now()
-                    ])
-                    user_id = cursor.lastrowid
-                    print(f"[INFO] Created user with UserId: {user_id}")
-               
-                # 2. Create RBAC permissions in rbac_tprm table
-                # Check if RBAC record already exists for this user
-                cursor.execute("SELECT RBACId FROM rbac_tprm WHERE UserId = %s", [user_id])
-                existing_rbac = cursor.fetchone()
-               
-                if not existing_rbac:
-                    # Set vendor-specific permissions (limited access)
-                    cursor.execute("""
-                        INSERT INTO rbac_tprm (
-                            UserId, UserName, Role,
-                            ViewRFP, ViewRFPResponses, SubmitRFPResponse, WithdrawRFPResponse,
-                            DownloadRFPDocuments, PreviewRFPDocuments, UploadDocumentsForRFP,
-                            ViewVendors, ViewContactsDocuments, ViewQuestionnaires,
-                            SubmitQuestionnaireResponses, ViewRiskAssessments,
-                            ViewPerformance, ViewDashboardTrend,
-                            CreatedAt, UpdatedAt, IsActive
-                        ) VALUES (
-                            %s, %s, %s,
-                            1, 1, 1, 1,
-                            1, 1, 1,
-                            1, 1, 1,
-                            1, 1,
-                            1, 1,
-                            %s, %s, 'Y'
-                        )
-                    """, [
-                        user_id,
-                        vendor_name,
-                        'Vendor',
-                        timezone.now(),
-                        timezone.now()
-                    ])
-                    print(f"[INFO] Created RBAC permissions for UserId: {user_id}")
-                else:
-                    print(f"[INFO] RBAC record already exists for UserId: {user_id}")
-
-                # Ensure essential vendor permissions are enabled
-                cursor.execute("""
-                    UPDATE rbac_tprm
-                    SET
-                        ViewVendors = 1,
-                        CreateVendor = 1,
-                        UpdateVendor = 1,
-                        SubmitVendorForApproval = 1,
-                        ViewContactsDocuments = 1,
-                        AddUpdateContactsDocuments = 1,
-                        ViewQuestionnaires = 1,
-                        SubmitQuestionnaireResponses = 1,
-                        ViewRiskAssessments = 1,
-                        ViewPerformance = 1,
-                        ViewDashboardTrend = 1
-                    WHERE UserId = %s
-                """, [user_id])
-               
-                # 3. Create temp_vendor record
-                # Check if temp_vendor record already exists
-                cursor.execute("SELECT id FROM temp_vendor WHERE response_id = %s", [notification.response_id])
-                existing_temp_vendor = cursor.fetchone()
-               
-                if not existing_temp_vendor:
-                    # Generate vendor code
-                    vendor_code = f"VEN-{str(uuid.uuid4())[:8].upper()}"
-                   
-                    cursor.execute("""
-                        INSERT INTO temp_vendor (
-                            UserId, vendor_code, company_name, legal_name,
-                            lifecycle_stage, status, vendor_category,
-                            risk_level, is_critical_vendor, created_at, updated_at,
-                            response_id
-                        ) VALUES (
-                            %s, %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s, %s,
-                            %s
-                        )
-                    """, [
-                        user_id,
-                        vendor_code,
-                        company_name,
-                        company_name,
-                        1,  # Initial lifecycle stage
-                        'pending_onboarding',
-                        'New Vendor',
-                        'Medium',
-                        0,  # Not critical initially
-                        timezone.now(),
-                        timezone.now(),
-                        notification.response_id
-                    ])
-                    temp_vendor_id = cursor.lastrowid
-                    print(f"[INFO] Created temp_vendor record with id: {temp_vendor_id}")
-                else:
-                    temp_vendor_id = existing_temp_vendor[0]
-                    print(f"[INFO] temp_vendor record already exists with id: {temp_vendor_id}")
-                    # Ensure temp_vendor record is linked to the latest user and reflects key vendor info
-                    cursor.execute(
-                        """
-                        UPDATE temp_vendor
-                        SET UserId = %s,
-                            company_name = %s,
-                            legal_name = %s,
-                            vendor_category = COALESCE(vendor_category, %s),
-                            updated_at = %s
-                        WHERE id = %s
-                        """,
-                        [
+                    # Get tprm connection for tprm_integration database
+                    tprm_connection = connections['tprm'] if 'tprm' in connections.databases else connection
+                    
+                    # Create user in tprm_integration.users table
+                    with tprm_connection.cursor() as tprm_users_cursor:
+                        tprm_users_cursor.execute("""
+                            INSERT INTO users (
+                                UserId, UserName, Email, Password, FirstName, LastName,
+                                IsActive, CreatedAt, UpdatedAt
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, [
                             user_id,
-                            company_name,
-                            company_name,
-                            'New Vendor',
+                            username,
+                            vendor_email,
+                            generated_password,  # In production, this should be hashed
+                            vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                            vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                            'Y',
                             timezone.now(),
-                            temp_vendor_id,
-                        ],
-                    )
+                            timezone.now()
+                        ])
+                        print(f"[INFO] Created user with UserId: {user_id} in tprm_integration.users table")
+                    
+                    # 3. Also create user in grc2 database with SHA256 hashed password
+                    try:
+                        # Hash password with SHA256 for grc2 database
+                        password_hash_sha256 = hashlib.sha256(generated_password.encode()).hexdigest()
+                        
+                        # Use default connection (grc2 database) to insert user
+                        with connection.cursor() as grc2_cursor:
+                            # Check if user already exists in grc2 database
+                            grc2_cursor.execute("SELECT UserId FROM users WHERE UserId = %s OR Email = %s", [user_id, vendor_email])
+                            existing_grc2_user = grc2_cursor.fetchone()
+                            
+                            if not existing_grc2_user:
+                                # Insert user into grc2 database users table
+                                grc2_cursor.execute("""
+                                    INSERT INTO users (
+                                        UserId, UserName, Email, Password, FirstName, LastName,
+                                        IsActive, CreatedAt, UpdatedAt
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, [
+                                    user_id,
+                                    username,
+                                    vendor_email,
+                                    password_hash_sha256,  # SHA256 hashed password
+                                    vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                    vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                    'Y',
+                                    timezone.now(),
+                                    timezone.now()
+                                ])
+                                print(f"[INFO] Created user with UserId: {user_id} in grc2 database with SHA256 hashed password")
+                            else:
+                                # Update existing user in grc2 database
+                                grc2_cursor.execute("""
+                                    UPDATE users
+                                    SET UserName = %s,
+                                        Password = %s,
+                                        Email = %s,
+                                        FirstName = %s,
+                                        LastName = %s,
+                                        UpdatedAt = %s
+                                    WHERE UserId = %s
+                                """, [
+                                    username,
+                                    password_hash_sha256,  # SHA256 hashed password
+                                    vendor_email,
+                                    vendor_name.split(' ')[0] if ' ' in vendor_name else vendor_name,
+                                    vendor_name.split(' ')[-1] if ' ' in vendor_name else '',
+                                    timezone.now(),
+                                    user_id
+                                ])
+                                print(f"[INFO] Updated user with UserId: {user_id} in grc2 database with SHA256 hashed password")
+                                
+                            # Create/Update RBAC entry in grc2.rbac table
+                            try:
+                                grc2_cursor.execute("SELECT RBACId FROM rbac WHERE UserId = %s", [user_id])
+                                existing_rbac_grc2 = grc2_cursor.fetchone()
+                                
+                                if not existing_rbac_grc2:
+                                    # Insert new RBAC entry for vendor in grc2
+                                    grc2_cursor.execute("""
+                                        INSERT INTO rbac (
+                                            UserId, UserName, Role, IsActive, CreatedAt, UpdatedAt
+                                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                                    """, [
+                                        user_id,
+                                        username,
+                                        'End User',  # Default role for vendor users in GRC system
+                                        'Y',
+                                        timezone.now(),
+                                        timezone.now()
+                                    ])
+                                    print(f"[INFO] Created RBAC entry in grc2.rbac for UserId: {user_id}")
+                                else:
+                                    # Update existing RBAC entry
+                                    grc2_cursor.execute("""
+                                        UPDATE rbac
+                                        SET UserName = %s,
+                                            UpdatedAt = %s
+                                        WHERE UserId = %s
+                                    """, [
+                                        username,
+                                        timezone.now(),
+                                        user_id
+                                    ])
+                                    print(f"[INFO] Updated RBAC entry in grc2.rbac for UserId: {user_id}")
+                            except Exception as rbac_error:
+                                # Log error but don't fail the entire operation
+                                print(f"[WARN] Failed to create/update RBAC entry in grc2.rbac: {str(rbac_error)}")
+                                logger.warning(f"Failed to create RBAC entry in grc2 for vendor user: {str(rbac_error)}")
+                                
+                    except Exception as grc2_error:
+                        # Log error but don't fail the entire operation
+                        print(f"[WARN] Failed to create/update user in grc2 database: {str(grc2_error)}")
+                        logger.warning(f"Failed to sync vendor user to grc2 database: {str(grc2_error)}")
+               
+                # 2. Create RBAC permissions in rbac_tprm table (in tprm_integration database)
+                # Use tprm connection for rbac_tprm table queries
+                tprm_connection = connections['tprm'] if 'tprm' in connections.databases else connection
+                
+                with tprm_connection.cursor() as rbac_cursor:
+                    # Check if RBAC record already exists for this user
+                    rbac_cursor.execute("SELECT RBACId FROM rbac_tprm WHERE UserId = %s", [user_id])
+                    existing_rbac = rbac_cursor.fetchone()
+                   
+                    if not existing_rbac:
+                        # Set vendor-specific permissions (limited access)
+                        rbac_cursor.execute("""
+                            INSERT INTO rbac_tprm (
+                                UserId, UserName, Role,
+                                ViewRFP, ViewRFPResponses, SubmitRFPResponse, WithdrawRFPResponse,
+                                DownloadRFPDocuments, PreviewRFPDocuments, UploadDocumentsForRFP,
+                                ViewVendors, ViewContactsDocuments, ViewQuestionnaires,
+                                SubmitQuestionnaireResponses, ViewRiskAssessments,
+                                ViewPerformance, ViewDashboardTrend,
+                                CreatedAt, UpdatedAt, IsActive
+                            ) VALUES (
+                                %s, %s, %s,
+                                1, 1, 1, 1,
+                                1, 1, 1,
+                                1, 1, 1,
+                                1, 1,
+                                1, 1,
+                                %s, %s, 'Y'
+                            )
+                        """, [
+                            user_id,
+                            vendor_name,
+                            'Vendor',
+                            timezone.now(),
+                            timezone.now()
+                        ])
+                        print(f"[INFO] Created RBAC permissions for UserId: {user_id}")
+                    else:
+                        print(f"[INFO] RBAC record already exists for UserId: {user_id}")
+
+                    # Ensure essential vendor permissions are enabled
+                    rbac_cursor.execute("""
+                        UPDATE rbac_tprm
+                        SET
+                            ViewVendors = 1,
+                            CreateVendor = 1,
+                            UpdateVendor = 1,
+                            SubmitVendorForApproval = 1,
+                            ViewContactsDocuments = 1,
+                            AddUpdateContactsDocuments = 1,
+                            ViewQuestionnaires = 1,
+                            SubmitQuestionnaireResponses = 1,
+                            ViewRiskAssessments = 1,
+                            ViewPerformance = 1,
+                            ViewDashboardTrend = 1
+                        WHERE UserId = %s
+                    """, [user_id])
+               
+                # 3. Create temp_vendor record (in tprm_integration database)
+                # Use tprm connection for temp_vendor table queries
+                with tprm_connection.cursor() as temp_vendor_cursor:
+                    # Check if temp_vendor record already exists
+                    temp_vendor_cursor.execute("SELECT id FROM temp_vendor WHERE response_id = %s", [notification.response_id])
+                    existing_temp_vendor = temp_vendor_cursor.fetchone()
+                   
+                    if not existing_temp_vendor:
+                        # Generate vendor code
+                        vendor_code = f"VEN-{str(uuid.uuid4())[:8].upper()}"
+                       
+                        temp_vendor_cursor.execute("""
+                            INSERT INTO temp_vendor (
+                                UserId, vendor_code, company_name, legal_name,
+                                lifecycle_stage, status, vendor_category,
+                                risk_level, is_critical_vendor, created_at, updated_at,
+                                response_id
+                            ) VALUES (
+                                %s, %s, %s, %s,
+                                %s, %s, %s,
+                                %s, %s, %s, %s,
+                                %s
+                            )
+                        """, [
+                            user_id,
+                            vendor_code,
+                            company_name,
+                            company_name,
+                            1,  # Initial lifecycle stage
+                            'pending_onboarding',
+                            'New Vendor',
+                            'Medium',
+                            0,  # Not critical initially
+                            timezone.now(),
+                            timezone.now(),
+                            notification.response_id
+                        ])
+                        temp_vendor_id = temp_vendor_cursor.lastrowid
+                        print(f"[INFO] Created temp_vendor record with id: {temp_vendor_id}")
+                    else:
+                        temp_vendor_id = existing_temp_vendor[0]
+                        print(f"[INFO] temp_vendor record already exists with id: {temp_vendor_id}")
+                        # Ensure temp_vendor record is linked to the latest user and reflects key vendor info
+                        temp_vendor_cursor.execute(
+                            """
+                            UPDATE temp_vendor
+                            SET UserId = %s,
+                                company_name = %s,
+                                legal_name = %s,
+                                vendor_category = COALESCE(vendor_category, %s),
+                                updated_at = %s
+                            WHERE id = %s
+                            """,
+                            [
+                                user_id,
+                                company_name,
+                                company_name,
+                                'New Vendor',
+                                timezone.now(),
+                                temp_vendor_id,
+                            ],
+                        )
            
             # 4. Send credentials email to vendor
             try:

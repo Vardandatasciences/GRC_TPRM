@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import logging
 import mysql.connector
+import requests
+import json
 
 # Load environment variables
 load_dotenv()
@@ -256,8 +258,43 @@ class ForgotPasswordService:
             logger.error(f"Error logging password reset action: {str(e)}")
     
     def send_password_reset_email(self, email, user_name, otp, platform_name="GRC System"):
-        """Send password reset email with OTP"""
+        """Send password reset email with OTP using Azure email backend with SMTP fallback"""
         try:
+            # Try to use Notification Service first (uses Azure AD)
+            try:
+                from .notification_service import NotificationService
+                
+                notification_service = NotificationService()
+                
+                expiry_time = f"{self.otp_expiry_minutes} minutes"
+                
+                notification_data = {
+                    'notification_type': 'passwordResetOTP',
+                    'email': email,
+                    'email_type': 'gmail',  # Will use Azure if configured, SMTP if not
+                    'template_data': [
+                        user_name,
+                        otp,
+                        expiry_time,
+                        platform_name
+                    ],
+                }
+                
+                email_result = notification_service.send_multi_channel_notification(notification_data)
+                
+                if email_result.get('success'):
+                    method_used = email_result.get('details', {}).get('email', {}).get('method', 'unknown')
+                    logger.info(f"Password reset email sent successfully to {email} via {method_used}")
+                    return True
+                else:
+                    logger.warning(f"Notification service failed, falling back to SMTP: {email_result.get('error', 'Unknown error')}")
+                    # Fall through to SMTP fallback
+                    
+            except Exception as notification_error:
+                logger.warning(f"Notification service unavailable, using SMTP fallback: {str(notification_error)}")
+                # Fall through to SMTP fallback
+            
+            # SMTP Fallback
             # Create email message
             msg = MIMEMultipart()
             msg['From'] = f"{self.from_name} <{self.from_email}>"
@@ -300,7 +337,7 @@ class ForgotPasswordService:
                 server.login(self.smtp_config['email'], self.smtp_config['password'])
                 server.send_message(msg)
             
-            logger.info(f"Password reset email sent successfully to {email}")
+            logger.info(f"Password reset email sent successfully to {email} via SMTP (fallback)")
             return True
             
         except Exception as e:

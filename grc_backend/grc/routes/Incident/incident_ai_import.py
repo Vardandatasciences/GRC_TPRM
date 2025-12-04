@@ -77,9 +77,9 @@ openai_client = None
 if OPENAI_AVAILABLE and OPENAI_API_KEY:
     try:
         openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        print("[OK] OpenAI client initialized successfully")
+        print("✅ OpenAI client initialized successfully")
     except Exception as e:
-        print(f"[ERROR] Failed to initialize OpenAI client: {e}")
+        print(f"❌ Failed to initialize OpenAI client: {e}")
 
 # Fields we want to extract from incidents table (excluding ID and date fields)
 INCIDENT_DB_FIELDS = [
@@ -288,14 +288,38 @@ def call_openai_json(prompt: str, retries: int = 3, temperature: float = None) -
     if temperature is None:
         temperature = OPENAI_TEMPERATURE
     
-    print(f"🤖 Calling OpenAI API (model: {OPENAI_MODEL}, temp: {temperature})")
+    # Clean model name - strip quotes and whitespace
+    model_clean = str(OPENAI_MODEL).strip().strip('"').strip("'")
+    model_lower = model_clean.lower()
+    
+    print(f"🤖 Calling OpenAI API (model: {model_clean}, temp: {temperature})")
+    print(f"🔍 Model check - Original: '{OPENAI_MODEL}', Cleaned: '{model_clean}', Lower: '{model_lower}'")
+    
+    # Models that support json_object response_format:
+    # gpt-4-turbo-preview, gpt-4-0125-preview, gpt-3.5-turbo-1106, gpt-4-turbo, gpt-4o
+    # Note: gpt-4o-mini does NOT support json_object format
+    # Explicitly exclude gpt-4o-mini first (it contains "gpt-4o" but doesn't support json_object)
+    if "gpt-4o-mini" in model_lower:
+        supports_json_format = False
+        print(f"🔍 Model '{model_clean}' is gpt-4o-mini - NOT adding response_format")
+    else:
+        # Check if model exactly matches or starts with a supported model
+        models_with_json_support = [
+            "gpt-4-turbo-preview", "gpt-4-0125-preview", "gpt-3.5-turbo-1106", 
+            "gpt-4-turbo", "gpt-4o"
+        ]
+        supports_json_format = any(
+            model_lower == model.lower() or model_lower.startswith(model.lower() + "-")
+            for model in models_with_json_support
+        )
+        print(f"🔍 Model '{model_clean}' supports_json_format check result: {supports_json_format}")
     
     for attempt in range(retries):
         try:
-            # Call OpenAI Chat Completions API
-            response = openai_client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
+            # Prepare request parameters
+            request_params = {
+                "model": model_clean,  # Use cleaned model name
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are a GRC (Governance, Risk, and Compliance) incident analysis expert. You extract and analyze incident data from documents with high accuracy. Always return valid JSON without markdown formatting."
@@ -305,9 +329,20 @@ def call_openai_json(prompt: str, retries: int = 3, temperature: float = None) -
                         "content": prompt
                     }
                 ],
-                temperature=temperature,
-                response_format={"type": "json_object"} if OPENAI_MODEL.startswith("gpt-4") or OPENAI_MODEL.startswith("gpt-3.5") else None
-            )
+                "temperature": temperature
+            }
+            
+            # Only add response_format for models that support it
+            if supports_json_format:
+                request_params["response_format"] = {"type": "json_object"}
+                print(f"✅ Adding response_format: json_object (model '{model_clean}' supports it)")
+            else:
+                print(f"⚠️  NOT adding response_format (model '{model_clean}' does not support json_object)")
+            
+            print(f"🔍 Request params keys: {list(request_params.keys())}")
+            
+            # Call OpenAI Chat Completions API
+            response = openai_client.chat.completions.create(**request_params)
             
             # Extract content from response
             raw_content = response.choices[0].message.content
@@ -336,7 +371,24 @@ def call_openai_json(prompt: str, retries: int = 3, temperature: float = None) -
             raise ValueError(f"Failed to parse JSON from OpenAI response after {retries} attempts: {e}")
             
         except Exception as e:
-            print(f"❌ OpenAI API error (attempt {attempt + 1}/{retries}): {type(e).__name__}: {e}")
+            error_type = type(e).__name__
+            error_message = str(e)
+            print(f"❌ OpenAI API error (attempt {attempt + 1}/{retries}): {error_type}: {error_message}")
+            
+            # Enhanced error logging for OpenAI SDK exceptions
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.json() if hasattr(e.response, 'json') else {}
+                    error_detail = error_body.get('error', {})
+                    if isinstance(error_detail, dict):
+                        print(f"🔍 OpenAI Error Details:")
+                        print(f"   Type: {error_detail.get('type', 'Unknown')}")
+                        print(f"   Code: {error_detail.get('code', 'Unknown')}")
+                        print(f"   Message: {error_detail.get('message', 'Unknown error')}")
+                        print(f"   Full error: {error_detail}")
+                except Exception as parse_err:
+                    print(f"⚠️  Could not parse error response: {parse_err}")
+            
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
                 continue

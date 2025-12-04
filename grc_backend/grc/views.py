@@ -4548,17 +4548,12 @@ def acknowledge_policy(request, policy_id):
 @permission_classes([AllowAny])
 def login_user(request):
     """Session-based login endpoint with rate limiting and account lockout"""
-    print("\n" + "="*60)
-    print("[LOGIN] Login request received")
-    print("="*60)
     try:
         data = json.loads(request.body)
         username = data.get('username')
         password = data.get('password')
         login_type = data.get('login_type', 'username')  # Default to username if not specified
         
-        print(f"[LOGIN] Attempt for {login_type}: {username}")
-        print(f"[LOGIN] IP: {request.META.get('REMOTE_ADDR', 'unknown')}")
         logger.debug(f"Login attempt for {login_type}: {username}")
         
         if not username or not password:
@@ -4709,9 +4704,6 @@ def login_user(request):
             request.session['grc_username'] = user.UserName
             request.session.save()  # Explicitly save session
             
-            print(f"[LOGIN] SUCCESS - User: {user.UserName} (ID: {user.UserId})")
-            print("="*60 + "\n")
-            
             # ========================================
             # LOGIN SUCCESS RESPONSE WITH LICENSE VERIFICATION
             # ========================================
@@ -4753,8 +4745,6 @@ def login_user(request):
                     'message': f'Too many failed login attempts. Account locked for 15 minutes. (Attempt {failed_attempts}/5)'
                 }, status=status.HTTP_403_FORBIDDEN)
             
-            print(f"[LOGIN] FAILED - Invalid credentials for {login_type}: {username} (Attempt {failed_attempts}/5)")
-            print("="*60 + "\n")
             logger.warning(f"Login failed - invalid credentials for {login_type}: {username} (Attempt {failed_attempts}/5)")
             return Response({
                 'status': 'error',
@@ -4781,12 +4771,6 @@ def logout_user(request):
     try:
         # Log the logout attempt
         user_id = request.session.get('user_id')
-        username = request.session.get('grc_username', 'unknown')
-        
-        print("\n" + "="*60)
-        print(f"[LOGOUT] User: {username} (ID: {user_id})")
-        print("="*60 + "\n")
-        
         if user_id:
             logger.info(f"Logout initiated for user ID: {user_id}")
         
@@ -5352,51 +5336,57 @@ def send_otp(request):
         logger.info(f"Send OTP - Session ID: {request.session.session_key}")
         logger.info(f"Send OTP - Session modified: {request.session.modified}")
         
-        # Send OTP via Email
+        # Send OTP via Email using Notification Service (Azure AD with SMTP fallback)
         try:
-            import smtplib
-            from email.mime.text import MIMEText
-            from email.mime.multipart import MIMEMultipart
+            from .routes.Global.notification_service import NotificationService
             
-            # SMTP Configuration for forgot password
-            smtp_server = "smtp.gmail.com"
-            smtp_port = 587
-            smtp_Email = "loukyarao68@gmail.com"
-            smtp_password = "vafx kqve dwmj mvjv"
+            notification_service = NotificationService()
             
-            # Create message
-            msg = MIMEMultipart()
-            msg['From'] = smtp_Email
-            msg['To'] = Email
-            msg['Subject'] = "Password Reset OTP - GRC Platform"
+            # Use the passwordResetOTP template from notification service
+            user_name = user.FirstName or user.UserName or user.Email.split('@')[0]
+            platform_name = "GRC Platform"
+            expiry_time = "5 minutes"
             
-            # Email body
-            body = f"""
-            Hello {user.FirstName or user.UserName},
+            notification_data = {
+                'notification_type': 'passwordResetOTP',
+                'email': Email,
+                'email_type': 'gmail',  # Will use Azure if configured, SMTP if not
+                'template_data': [
+                    user_name,
+                    otp,
+                    expiry_time,
+                    platform_name
+                ],
+            }
             
-            You have requested a password reset for your GRC Platform account.
+            logger.info(f"[OTP] Attempting to send OTP email to {Email} via Azure (with SMTP fallback)")
+            email_result = notification_service.send_multi_channel_notification(notification_data)
             
-            Your OTP (One-Time Password) is: {otp}
-            
-            This OTP will expire in 5 minutes.
-            
-            If you did not request this password reset, please ignore this Email.
-            
-            Best regards,
-            GRC Platform Team
-            """
-            
-            msg.attach(MIMEText(body, 'plain'))
-            
-            # Send Email
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            server.starttls()
-            server.login(smtp_Email, smtp_password)
-            text = msg.as_string()
-            server.sendmail(smtp_Email, Email, text)
-            server.quit()
-            
-            logger.info(f"OTP sent successfully to {Email}")
+            # Log result
+            if email_result.get('success'):
+                email_details = email_result.get('details', {}).get('email')
+                if email_details:
+                    method_used = email_details.get('method', 'unknown')
+                    logger.info(f"[OTP] ✅ OTP email sent successfully to {Email} via {method_used}")
+                    
+                    # For Azure, log additional info to help debug delivery issues
+                    if method_used == 'azure_graph_api':
+                        logger.info(f"[OTP] Azure Graph API accepted the email. If not received, verify:")
+                        logger.info(f"[OTP]    - Azure AD app has 'Mail.Send' Application permission with admin consent")
+                        logger.info(f"[OTP]    - Sender email '{email_details.get('from', 'N/A')}' has mailbox enabled")
+                        logger.info(f"[OTP]    - Check spam/junk folder")
+                else:
+                    logger.warning(f"[OTP] ⚠️ Success reported but no email details. Result: {email_result}")
+            else:
+                error_msg = email_result.get('error', 'Unknown error')
+                error_details = email_result.get('details', {}).get('errors', [])
+                logger.error(f"[OTP] ❌ Failed to send OTP email: {error_msg}")
+                if error_details:
+                    for err in error_details:
+                        logger.error(f"[OTP]   - Channel: {err.get('channel')}, Error: {err.get('error')}")
+                
+                # Still return success to user for security (don't reveal email failures)
+                logger.warning("[OTP] Returning success to user despite email failure for security reasons")
             response = Response({
                 'success': True,
                 'message': 'OTP sent to your Email address'

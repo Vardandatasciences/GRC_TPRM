@@ -62,7 +62,7 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "changeme-in-dev-only")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', 'api-grc.vardaands.com', '15.207.108.158','127.0.0.1','e581-2405-201-c00b-4973-29e6-34b2-9eae-1e0c.ngrok-free.app', '13.204.228.21']
+ALLOWED_HOSTS = ['localhost', 'grc-backend.vardaands.com','grc-backend.vardaands.com', '15.207.108.158','127.0.0.1','e581-2405-201-c00b-4973-29e6-34b2-9eae-1e0c.ngrok-free.app', '13.204.228.21']
 
 
 # Application definition
@@ -399,13 +399,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://15.207.108.158:8081",  # AWS deployment frontend alternative (HTTP)
     "https://15.207.108.158:8080",  # AWS deployment frontend (HTTPS)
     "https://15.207.108.158:8081",  # AWS deployment frontend alternative (HTTPS)
-    "https://43.205.117.41",  # Deployed frontend URL (HTTPS)
-    "http://43.205.117.41",  # Deployed frontend URL
-    "http://43.205.117.41:80",  # Deployed frontend URL with port
-    "http://43.205.117.41:8080",  # Deployed frontend URL with port
-    "http://43.205.117.41:8081",  # Deployed frontend URL with port
-    "http://13.204.228.21:8000",  # New server IP with port
-    "https://13.204.228.21:8000",  # New server IP with port (HTTPS)
+    "https://13.201.54.231",  # Deployed frontend URL (HTTPS)
+    "http://13.201.54.231",  # Deployed frontend URL
+    "http://13.201.54.231:80",  # Deployed frontend URL with port
+    "http://13.201.54.231:8080",  # Deployed frontend URL with port
+    "http://13.201.54.231:8081",  # Deployed frontend URL with port
+    "https://grc-backend.vardaands.com",  # New server IP with port
+    "https://13.204.228.21:8000",  # New server IP with port (HTTPS),
+    "http://13.204.228.21:8000",
 ]
 
 # CSRF settings
@@ -419,13 +420,14 @@ CSRF_TRUSTED_ORIGINS = [
     "https://15.207.108.158:8000",  # AWS backend HTTPS
     "https://15.207.108.158:8080",  # AWS frontend HTTPS
     "https://15.207.108.158:8081",  # AWS frontend alternative HTTPS
-    "http://43.205.117.41",  # Deployed frontend URL
-    "https://43.205.117.41",  # Deployed frontend URL (HTTPS)
-    "http://43.205.117.41:80",  # Deployed frontend URL with port
-    "http://43.205.117.41:8080",  # Deployed frontend URL with port
-    "http://43.205.117.41:8081",  # Deployed frontend URL with port
-    "http://13.204.228.21:8000",  # New server IP with port
+    "http://13.201.54.231",  # Deployed frontend URL
+    "https://13.201.54.231",  # Deployed frontend URL (HTTPS)
+    "http://13.201.54.231:80",  # Deployed frontend URL with port
+    "http://13.201.54.231:8080",  # Deployed frontend URL with port
+    "http://13.201.54.231:8081",  # Deployed frontend URL with port
+    "https://grc-backend.vardaands.com",  # New server IP with port
     "https://13.204.228.21:8000",  # New server IP with port (HTTPS)
+    "http://13.204.228.21:8000",
 ]
 
 # Additional CORS settings
@@ -555,17 +557,28 @@ GMAIL_USER = os.environ.get('GMAIL_USER', '')
 GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
 
 # Email Configuration
+# For Azure AD: Use the Azure AD registered email (praharshitha.d@vardaanglobal.com)
+# For SMTP: Can use SMTP_EMAIL if different
+# Priority: Environment variable > Azure AD default > SMTP_EMAIL
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'praharshitha.d@vardaanglobal.com')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', SMTP_EMAIL or 'no-reply@example.com')
 DEFAULT_FROM_NAME = os.environ.get('DEFAULT_FROM_NAME', 'GRC System')
 
 # Django Email Backend Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_BACKEND = 'grc.routes.Global.azure_email_backend.AzureADEmailBackend'
 EMAIL_HOST = SMTP_SERVER
 EMAIL_PORT = SMTP_PORT
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = SMTP_EMAIL
 EMAIL_HOST_PASSWORD = SMTP_PASSWORD
 
+
+# Azure AD Email Configuration
+# Note: Environment variables take precedence. Defaults provided for immediate use.
+AZURE_AD_TENANT_ID = os.environ.get('AZURE_AD_TENANT_ID', 'aa7c8c45-41a3-4453-bc9a-3adfe8ff5fb6')
+AZURE_AD_CLIENT_ID = os.environ.get('AZURE_AD_CLIENT_ID', '127107b0-7144-4246-b2f4-160263ceb3c9')
+AZURE_AD_CLIENT_SECRET = os.environ.get('AZURE_AD_CLIENT_SECRET', 'sVr8Q~3b0OS~L5NFIaWGomhiGwSwFuNMnW7RPamR')
+AZURE_AD_SCOPE = os.environ.get('AZURE_AD_SCOPE', 'https://graph.microsoft.com/.default')
 # WhatsApp API Configuration
 WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/521803094347148/messages')
 WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
@@ -580,12 +593,32 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-1")
 AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "ap-south-1")
+# Toggle between local and deployed environments (define early as it's used in other configs)
+USE_LOCAL_DEVELOPMENT = os.environ.get('USE_LOCAL_DEVELOPMENT', 'true').lower() == 'true'  # Set to False for production
 
+# Helper function to clean environment variable values (remove quotes)
+# Define early so it can be used in OAuth configurations
+def clean_env_value(value, default=''):
+    """Remove quotes from environment variable values"""
+    if not value:
+        return default
+    value = str(value).strip()
+    # Remove quotes from start and end
+    while (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1].strip()
+    return value.strip("'\"")
 # Microsoft Azure AD Configuration for Sentinel Integration
 MICROSOFT_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
 MICROSOFT_TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID", "")
 MICROSOFT_CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get("MICROSOFT_REDIRECT_URI", "https://api-grc.vardaands.com/auth/sentinel/callback")
+# Only use env var if explicitly set, otherwise use conditional based on USE_LOCAL_DEVELOPMENT
+if 'MICROSOFT_REDIRECT_URI' in os.environ:
+    REDIRECT_URI = clean_env_value(os.environ.get('MICROSOFT_REDIRECT_URI'))
+else:
+    REDIRECT_URI = (
+        'http://localhost:8000/auth/sentinel/callback' if USE_LOCAL_DEVELOPMENT
+        else 'https://grc-backend.vardaands.com/auth/sentinel/callback'
+    )
 MICROSOFT_AUTHORITY = os.environ.get("MICROSOFT_AUTHORITY", "https://login.microsoftonline.com/common")
 MICROSOFT_USER = os.environ.get("MICROSOFT_USER", "")
 
@@ -594,11 +627,19 @@ AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
 AZURE_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "")
 AZURE_WORKSPACE_NAME = os.environ.get("AZURE_WORKSPACE_NAME", "")
 
-# Jira OAuth Configuration (HTTPS)
-JIRA_CLIENT_ID = os.environ.get("JIRA_CLIENT_ID", "")
-JIRA_CLIENT_SECRET = os.environ.get("JIRA_CLIENT_SECRET", "")
-JIRA_REDIRECT_URI = os.environ.get("JIRA_REDIRECT_URI", "https://api-grc.vardaands.com/api/jira/oauth-callback/")
-JIRA_SCOPES = os.environ.get("JIRA_SCOPES", 'read:jira-user read:jira-work')
+# Jira OAuth Configuration
+
+JIRA_CLIENT_ID = clean_env_value(os.environ.get("JIRA_CLIENT_ID", ""))
+JIRA_CLIENT_SECRET = clean_env_value(os.environ.get("JIRA_CLIENT_SECRET", ""))
+# Only use env var if explicitly set, otherwise use conditional based on USE_LOCAL_DEVELOPMENT
+if 'JIRA_REDIRECT_URI' in os.environ:
+    JIRA_REDIRECT_URI = clean_env_value(os.environ.get('JIRA_REDIRECT_URI'))
+else:
+    JIRA_REDIRECT_URI = (
+        'http://127.0.0.1:8000/api/jira/oauth-callback/' if USE_LOCAL_DEVELOPMENT
+        else 'https://grc-backend.vardaands.com/api/jira/oauth-callback'  # No trailing slash to match Atlassian registration
+    )
+JIRA_SCOPES = clean_env_value(os.environ.get("JIRA_SCOPES", 'read:jira-user read:jira-work'), 'read:jira-user read:jira-work')
 
 # Database convenience env vars (for raw connections / other services)
 DB_HOST = os.environ.get('DB_HOST', '')
@@ -606,27 +647,25 @@ DB_USER = os.environ.get('DB_USER', '')
 DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 DB_NAME = os.environ.get('DB_NAME', '')
 
-# BambooHR OAuth Configuration
-BAMBOOHR_CLIENT_ID = os.environ.get("BAMBOOHR_CLIENT_ID", "")
-BAMBOOHR_CLIENT_SECRET = os.environ.get("BAMBOOHR_CLIENT_SECRET", "")
-# Toggle between local and deployed environments
-USE_LOCAL_DEVELOPMENT = os.environ.get('USE_LOCAL_DEVELOPMENT', 'true').lower() == 'true'  # Set to False for production
- 
+BAMBOOHR_CLIENT_ID = clean_env_value(os.environ.get("BAMBOOHR_CLIENT_ID", ""))
+BAMBOOHR_CLIENT_SECRET = clean_env_value(os.environ.get("BAMBOOHR_CLIENT_SECRET", ""))
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:8080' if USE_LOCAL_DEVELOPMENT else 'http://example.com')
+# Only use env var if explicitly set, otherwise use conditional based on USE_LOCAL_DEVELOPMENT
+if 'BAMBOOHR_REDIRECT_URI' in os.environ:
+    BAMBOOHR_REDIRECT_URI = clean_env_value(os.environ.get('BAMBOOHR_REDIRECT_URI'))
+else:
+    BAMBOOHR_REDIRECT_URI = (
+        'http://127.0.0.1:8000/api/bamboohr/oauth-callback/' if USE_LOCAL_DEVELOPMENT
+        else 'https://grc-backend.vardaands.com/api/bamboohr/oauth-callback/'
+    )
  
- 
-BAMBOOHR_REDIRECT_URI = os.environ.get(
-    'BAMBOOHR_REDIRECT_URI',
-    'http://127.0.0.1:8000/api/bamboohr/oauth-callback/' if USE_LOCAL_DEVELOPMENT
-    else 'https://api-grc.vardaands.com/api/bamboohr/oauth-callback/'
-)
 BAMBOOHR_FLASK_SERVER_URL = os.environ.get(
     'BAMBOOHR_FLASK_SERVER_URL',
-    'http://127.0.0.1:5000' if USE_LOCAL_DEVELOPMENT else 'https://api-grc.vardaands.com'
+    'http://127.0.0.1:5000' if USE_LOCAL_DEVELOPMENT else 'https://grc-backend.vardaands.com'
 )
 
-BAMBOOHR_SCOPES = os.environ.get(
-    'BAMBOOHR_SCOPES',
+BAMBOOHR_SCOPES = clean_env_value(
+    os.environ.get('BAMBOOHR_SCOPES', 'email openid employee company:info employee:contact employee:job employee:name employee:photo employee_directory'),
     'email openid employee company:info employee:contact employee:job employee:name employee:photo employee_directory'
 )
  

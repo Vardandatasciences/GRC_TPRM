@@ -31,8 +31,8 @@ if USE_LOCAL:
     FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:8080")
     print("🌍 Running in LOCAL development mode")
 else:
-    REDIRECT_URI = "https://api-grc.vardaands.com/api/bamboohr/oauth-callback/"
-    DJANGO_BACKEND_URL = os.environ.get("DJANGO_BACKEND_URL", "https://api-grc.vardaands.com")
+    REDIRECT_URI = "https://grc-backend.vardaands.com/api/bamboohr/oauth-callback/"
+    DJANGO_BACKEND_URL = os.environ.get("DJANGO_BACKEND_URL", "https://grc-backend.vardaands.com")
     FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:8080")
     print("🌍 Running in PRODUCTION mode")
 

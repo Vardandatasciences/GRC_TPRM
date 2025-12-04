@@ -85,6 +85,28 @@ from mysql.connector import pooling
 import threading
 import tempfile
 import io
+from io import BytesIO
+
+# Export libraries
+try:
+    import pandas as pd
+    import numpy as np
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+try:
+    import xmltodict
+    XMLTODICT_AVAILABLE = True
+except ImportError:
+    XMLTODICT_AVAILABLE = False
+
+try:
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 # PDF Processing libraries
 try:
@@ -1299,21 +1321,41 @@ Your summaries should be:
                 print(f"📁 File details: name={file_name}, size={file_size}, type={mimetypes.guess_type(file_path)[0]}")
                 
                 try:
-                    response = requests.post(url, files=files, timeout=300)
-                    print(f"📊 Response status: {response.status_code}")
-                    print(f"📝 Response headers: {dict(response.headers)}")
+                    upload_start_time = datetime.datetime.now()
+                    print(f"⏱️  [UPLOAD] Starting upload at {upload_start_time.strftime('%H:%M:%S')}")
+                    print(f"⏱️  [UPLOAD] Timeout set to: 600 seconds (10 minutes)")
+                    print(f"⏱️  [UPLOAD] File size: {file_size:,} bytes ({file_size / (1024*1024):.2f} MB)")
+                    
+                    # Increased timeout for large files (10 minutes)
+                    response = requests.post(url, files=files, timeout=600)
+                    
+                    upload_elapsed = (datetime.datetime.now() - upload_start_time).total_seconds()
+                    print(f"⏱️  [UPLOAD] Upload completed in {upload_elapsed:.2f} seconds")
+                    print(f"📊 [UPLOAD] Response status: {response.status_code}")
+                    print(f"📝 [UPLOAD] Response headers: {dict(response.headers)}")
                     
                     if response.status_code != 200:
-                        print(f"ERROR Response content: {response.text}")
+                        print(f"❌ [UPLOAD] ERROR Response content: {response.text}")
                         
                     response.raise_for_status()
                     result = response.json()
-                    print(f"SUCCESS Upload response: {result}")
+                    print(f"✅ [UPLOAD] SUCCESS Upload response: {result}")
+                    
+                except requests.exceptions.Timeout as timeout_error:
+                    upload_elapsed = (datetime.datetime.now() - upload_start_time).total_seconds()
+                    print(f"❌ [UPLOAD] TIMEOUT after {upload_elapsed:.2f} seconds")
+                    print(f"❌ [UPLOAD] Microservice at {url} did not respond within 600 seconds")
+                    raise Exception(f"Upload timeout: Microservice did not respond within 10 minutes. File size: {file_size / (1024*1024):.2f} MB")
                     
                 except requests.exceptions.RequestException as e:
-                    print(f"ERROR Request failed: {str(e)}")
-                    if hasattr(e.response, 'text'):
-                        print(f"ERROR Error response: {e.response.text}")
+                    upload_elapsed = (datetime.datetime.now() - upload_start_time).total_seconds() if 'upload_start_time' in locals() else 0
+                    print(f"❌ [UPLOAD] Request failed after {upload_elapsed:.2f} seconds: {str(e)}")
+                    print(f"❌ [UPLOAD] Error type: {type(e).__name__}")
+                    if hasattr(e, 'response') and e.response is not None:
+                        print(f"❌ [UPLOAD] Error response status: {e.response.status_code}")
+                        print(f"❌ [UPLOAD] Error response content: {e.response.text}")
+                    import traceback
+                    traceback.print_exc()
                     raise
             
             if result.get('success'):
@@ -1537,7 +1579,9 @@ Your summaries should be:
             print(f"📦 Payload size: {len(str(payload))} characters")
             print(f"🔑 Using AWS credentials: {aws_credentials['awsAccessKey'][:10]}...")
             
-            response = requests.post(url, json=payload, timeout=300)
+            # Increased timeout for large exports (10 minutes)
+            # Note: For very large datasets (>1000 records), use local export instead
+            response = requests.post(url, json=payload, timeout=600)
             print(f"📊 Response status: {response.status_code}")
             
             if response.status_code != 200:
@@ -1612,6 +1656,653 @@ Your summaries should be:
                 'error': error_msg,
                 'error_type': type(e).__name__
             }
+
+# ============================================================================
+# EXPORT FUNCTIONS - All export formats handled here
+# ============================================================================
+
+def export_to_excel(data):
+    """Export data to Excel format with enhanced formatting"""
+    if not PANDAS_AVAILABLE:
+        raise ImportError("pandas is required for Excel export. Install with: pip install pandas")
+    
+    try:
+        # Convert data to DataFrame
+        if isinstance(data, list) and len(data) > 0:
+            df = pd.DataFrame(data)
+        elif isinstance(data, dict):
+            df = pd.DataFrame([data])
+        else:
+            df = pd.DataFrame(data)
+        
+        # Clean the data: Replace NaN, None, and INF values with empty string
+        df = df.replace([np.nan, np.inf, -np.inf, None], '')
+        
+        # Convert all data to string to avoid type issues, then back to appropriate types
+        for col in df.columns:
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(df[col])
+            except:
+                pass
+        
+        output = BytesIO()
+        
+        # Try to use xlsxwriter engine first (preferred for formatting)
+        try:
+            print("Attempting Excel export with xlsxwriter...")
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                workbook = writer.book
+                worksheet = workbook.add_worksheet('Export')
+                
+                # Format the header
+                header_format = workbook.add_format({
+                    'bold': True, 
+                    'bg_color': '#4F6CFF',
+                    'font_color': 'white',
+                    'border': 1,
+                    'align': 'center',
+                    'valign': 'vcenter'
+                })
+                
+                # Add alternating row colors for better readability
+                row_format_even = workbook.add_format({'bg_color': '#F8F9FA'})
+                row_format_odd = workbook.add_format({'bg_color': '#FFFFFF'})
+                
+                # Write headers
+                for col_num, value in enumerate(df.columns.values):
+                    worksheet.write(0, col_num, str(value), header_format)
+                    
+                # Adjust column widths dynamically
+                for i, col in enumerate(df.columns):
+                    try:
+                        max_length = max(
+                            df[col].astype(str).map(len).max(),
+                            len(str(col))
+                        )
+                        worksheet.set_column(i, i, min(max_length + 3, 50))
+                    except:
+                        worksheet.set_column(i, i, 15)
+                
+                # Write data with safe handling
+                for row_num in range(len(df)):
+                    row_format = row_format_even if (row_num + 1) % 2 == 0 else row_format_odd
+                    for col_num in range(len(df.columns)):
+                        cell_value = df.iloc[row_num, col_num]
+                        if cell_value is None or cell_value == '':
+                            cell_value = ''
+                        elif pd.isna(cell_value):
+                            cell_value = ''
+                        elif isinstance(cell_value, (float, np.floating)):
+                            if np.isnan(cell_value) or np.isinf(cell_value):
+                                cell_value = ''
+                        worksheet.write(row_num + 1, col_num, cell_value, row_format)
+                        
+            print(f"✅ Excel export successful with xlsxwriter. File size: {len(output.getvalue())} bytes")
+            
+        except ImportError:
+            # Fall back to openpyxl if xlsxwriter is not available
+            print("xlsxwriter not found, trying openpyxl instead...")
+            try:
+                from openpyxl import Workbook
+                from openpyxl.styles import Font, PatternFill, Alignment
+                
+                output = BytesIO()
+                df_clean = df.replace([np.nan, np.inf, -np.inf, None], '')
+                
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_clean.to_excel(writer, sheet_name='Export', index=False)
+                    worksheet = writer.sheets['Export']
+                    
+                    # Style the header row
+                    header_fill = PatternFill(start_color='4F6CFF', end_color='4F6CFF', fill_type='solid')
+                    header_font = Font(bold=True, color='FFFFFF')
+                    header_alignment = Alignment(horizontal='center', vertical='center')
+                    
+                    for cell in worksheet[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = header_alignment
+                    
+                    # Adjust column widths
+                    for i, col in enumerate(df.columns):
+                        try:
+                            max_length = max(
+                                df_clean[col].astype(str).map(len).max(),
+                                len(str(col))
+                            )
+                            worksheet.column_dimensions[chr(65 + i)].width = min(max_length + 3, 50)
+                        except:
+                            worksheet.column_dimensions[chr(65 + i)].width = 15
+                
+                print(f"✅ Excel export successful with openpyxl. File size: {len(output.getvalue())} bytes")
+                
+            except ImportError as openpyxl_error:
+                raise ImportError("Excel export requires either xlsxwriter or openpyxl. Install: pip install xlsxwriter or pip install openpyxl")
+    
+        output.seek(0)
+        return output.getvalue()
+        
+    except Exception as e:
+        print(f"❌ Excel export error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise Exception(f"Excel export failed: {str(e)}")
+
+def export_to_csv(data):
+    """Export data to CSV format"""
+    if not PANDAS_AVAILABLE:
+        raise ImportError("pandas is required for CSV export. Install with: pip install pandas")
+    
+    df = pd.DataFrame(data)
+    output = BytesIO()
+    df.to_csv(output, index=False)
+    output.seek(0)
+    return output.getvalue()
+
+def export_to_json(data):
+    """Export data to JSON format"""
+    return json.dumps(data, indent=2).encode('utf-8')
+
+def export_to_xml(data):
+    """Export data to XML format"""
+    if not XMLTODICT_AVAILABLE:
+        raise ImportError("xmltodict is required for XML export. Install with: pip install xmltodict")
+    
+    root_name = 'export'
+    if isinstance(data, list):
+        xml_data = {root_name: {'item': data}}
+    else:
+        xml_data = {root_name: data}
+    
+    xml_string = xmltodict.unparse(xml_data, pretty=True)
+    return xml_string.encode('utf-8')
+
+def export_to_pdf(data):
+    """Export data to PDF format"""
+    if not REPORTLAB_AVAILABLE:
+        raise ImportError("reportlab is required for PDF export. Install with: pip install reportlab")
+    
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    
+    # Add title
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(width/2 - 50, height - 50, "Export Report")
+    
+    # Add data
+    c.setFont("Helvetica", 12)
+    y_position = height - 100
+    
+    if isinstance(data, list):
+        for i, item in enumerate(data):
+            c.drawString(50, y_position, f"Item {i+1}:")
+            y_position -= 20
+            
+            for key, value in item.items():
+                c.drawString(70, y_position, f"{key}: {value}")
+                y_position -= 20
+                
+                if y_position < 50:  # Add a new page if needed
+                    c.showPage()
+                    y_position = height - 50
+    else:
+        for key, value in data.items():
+            c.drawString(50, y_position, f"{key}: {value}")
+            y_position -= 20
+            
+            if y_position < 50:  # Add a new page if needed
+                c.showPage()
+                y_position = height - 50
+    
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def export_to_txt(data):
+    """Export data to Text format"""
+    buffer = BytesIO()
+    
+    buffer.write(b"Export Report\n")
+    buffer.write(b"=" * 50 + b"\n\n")
+    buffer.write(f"Generated: {datetime.datetime.now().isoformat()}\n\n".encode('utf-8'))
+    
+    def format_item(item, level=0):
+        indent = "  " * level
+        
+        if isinstance(item, list):
+            for i, element in enumerate(item):
+                buffer.write(f"{indent}Item {i+1}:\n".encode('utf-8'))
+                format_item(element, level + 1)
+        elif isinstance(item, dict):
+            for key, value in item.items():
+                if isinstance(value, (dict, list)):
+                    buffer.write(f"{indent}{key}:\n".encode('utf-8'))
+                    format_item(value, level + 1)
+                else:
+                    buffer.write(f"{indent}{key}: {value}\n".encode('utf-8'))
+        else:
+            buffer.write(f"{indent}{item}\n".encode('utf-8'))
+    
+    format_item(data)
+    
+    buffer.write(b"\n" + b"=" * 50 + b"\n")
+    buffer.write(b"End of Report")
+    
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def get_content_type(file_type):
+    """Get content type based on file extension"""
+    content_types = {
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'pdf': 'application/pdf',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'csv': 'text/csv',
+        'json': 'application/json',
+        'xml': 'application/xml',
+        'txt': 'text/plain'
+    }
+    
+    return content_types.get(file_type, 'application/octet-stream')
+
+def export_data(data=None, file_format='xlsx', user_id='user123', options=None, s3_client_instance=None):
+    """
+    COMPREHENSIVE EXPORT FUNCTION - All export formats handled here
+    Uses local export for large datasets to avoid timeout
+    
+    Args:
+        data: The data to export
+        file_format: Format to export (xlsx, pdf, csv, json, xml, txt)
+        user_id: ID of the user requesting the export
+        options: Additional export options (file_name, etc.)
+        s3_client_instance: RenderS3Client instance (optional, will create if not provided)
+        
+    Returns:
+        Dictionary with export results
+    """
+    start_time_total = datetime.datetime.now()
+    print(f"\n{'='*80}")
+    print(f"🚀 [EXPORT] Starting export process at {start_time_total.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*80}")
+    
+    if data is None:
+        data = []
+        print(f"⚠️  [EXPORT] No data provided, using empty list")
+        
+    if options is None:
+        options = {}
+        print(f"ℹ️  [EXPORT] No options provided, using defaults")
+    else:
+        print(f"ℹ️  [EXPORT] Options received: {options}")
+    
+    # Validate data size to prevent 413 errors
+    data_size = len(str(data))
+    max_size = 40 * 1024 * 1024  # 40MB limit
+    record_count = len(data) if isinstance(data, list) else 1
+    
+    print(f"\n📊 [EXPORT] Data validation:")
+    print(f"   ├─ Data size: {data_size:,} bytes ({data_size / (1024*1024):.2f} MB)")
+    print(f"   ├─ Record count: {record_count:,}")
+    print(f"   ├─ Format: {file_format}")
+    print(f"   └─ User ID: {user_id}")
+    
+    if data_size > max_size:
+        error_msg = f'Data too large for export ({data_size} bytes). Maximum allowed: {max_size} bytes. Please reduce the data size or use pagination.'
+        print(f"❌ [EXPORT] {error_msg}")
+        return {
+            'success': False,
+            'error': error_msg
+        }
+    
+    timestamp = datetime.datetime.now().timestamp()
+    
+    # Generate filename with proper extension
+    print(f"\n📝 [EXPORT] Generating filename...")
+    if options.get('file_name'):
+        base_name = options.get('file_name')
+        if '.' in base_name:
+            base_name = base_name.rsplit('.', 1)[0]
+        file_name = f"{base_name}.{file_format}"
+        print(f"   └─ Using provided filename: {file_name}")
+    else:
+        file_name = f"export_{user_id}_{int(timestamp)}.{file_format}"
+        print(f"   └─ Generated filename: {file_name}")
+    
+    # Get or create S3 client instance
+    print(f"\n🔧 [EXPORT] Initializing S3 client...")
+    if s3_client_instance is None:
+        try:
+            print(f"   ├─ S3 client not provided, creating new instance...")
+            from django.conf import settings
+            db_config = settings.DATABASES['default']
+            mysql_config = {
+                'host': db_config['HOST'],
+                'user': db_config['USER'],
+                'password': db_config['PASSWORD'],
+                'database': db_config['NAME'],
+                'port': db_config.get('PORT', 3306)
+            }
+            print(f"   ├─ MySQL config: {mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}")
+            s3_client_instance = create_direct_mysql_client(mysql_config)
+            print(f"   └─ ✅ S3 client created successfully")
+        except Exception as e:
+            print(f"   └─ ❌ Could not create S3 client: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            s3_client_instance = None
+    else:
+        print(f"   └─ ✅ Using provided S3 client instance")
+    
+    try:
+        # Check if S3 client is available
+        print(f"\n🔍 [EXPORT] Checking S3 client availability...")
+        if not s3_client_instance:
+            print(f"   └─ ⚠️  S3 client not available, using local export only")
+            return local_export_fallback(data, file_format, user_id, options)
+        print(f"   └─ ✅ S3 client available")
+        
+        # Validate format
+        print(f"\n✅ [EXPORT] Validating export format...")
+        all_supported_formats = ['json', 'csv', 'xml', 'txt', 'pdf', 'xlsx']
+        if file_format.lower() not in all_supported_formats:
+            error_msg = f"Unsupported export format: {file_format}. Supported: {all_supported_formats}"
+            print(f"   └─ ❌ {error_msg}")
+            raise ValueError(error_msg)
+        print(f"   └─ ✅ Format '{file_format}' is supported")
+        
+        # Check if dataset is too large for microservice
+        # For large datasets (>1000 records or >1MB), use local export to avoid timeout
+        print(f"\n📏 [EXPORT] Analyzing dataset size...")
+        data_size_mb = data_size / (1024 * 1024)
+        microservice_supported = ['json', 'csv', 'xml', 'txt', 'pdf']
+        format_supported_by_microservice = file_format.lower() in microservice_supported
+        
+        use_local_export = (
+            not format_supported_by_microservice or  # xlsx always local
+            record_count > 1000 or  # More than 1000 records
+            data_size_mb > 1.0  # More than 1MB of data
+        )
+        
+        print(f"   ├─ Format supported by microservice: {format_supported_by_microservice}")
+        print(f"   ├─ Record count: {record_count:,}")
+        print(f"   ├─ Data size: {data_size_mb:.2f} MB")
+        print(f"   ├─ Threshold check: records > 1000? {record_count > 1000}, size > 1MB? {data_size_mb > 1.0}")
+        print(f"   └─ Use local export: {use_local_export}")
+        
+        if use_local_export:
+            # Use local export for unsupported formats OR large datasets to avoid timeout
+            print(f"\n🏠 [EXPORT] Using LOCAL EXPORT strategy")
+            if not format_supported_by_microservice:
+                print(f"   └─ Reason: Format '{file_format}' not supported by microservice")
+            else:
+                print(f"   └─ Reason: Large dataset detected ({record_count:,} records, {data_size_mb:.2f}MB)")
+            
+            # Export to file locally
+            print(f"\n📄 [EXPORT] Step 1/3: Converting data to {file_format.upper()} format locally...")
+            print(f"   ├─ Filename: {file_name}")
+            start_time = datetime.datetime.now()
+            print(f"   └─ Started at: {start_time.strftime('%H:%M:%S')}")
+            
+            export_functions = {
+                'xlsx': export_to_excel,
+                'pdf': export_to_pdf,
+                'csv': export_to_csv,
+                'json': export_to_json,
+                'xml': export_to_xml,
+                'txt': export_to_txt
+            }
+            
+            try:
+                export_func = export_functions[file_format.lower()]
+                print(f"   ├─ Calling export function: {export_func.__name__}")
+                file_buffer = export_func(data)
+                conversion_time = (datetime.datetime.now() - start_time).total_seconds()
+                print(f"   ├─ ✅ Conversion completed in {conversion_time:.2f} seconds")
+                print(f"   └─ File size: {len(file_buffer):,} bytes ({len(file_buffer) / (1024*1024):.2f} MB)")
+            except Exception as conv_error:
+                print(f"   └─ ❌ Conversion failed: {str(conv_error)}")
+                import traceback
+                traceback.print_exc()
+                raise
+            
+            # Upload to S3 using microservice
+            print(f"\n☁️  [EXPORT] Step 2/3: Uploading file to S3...")
+            upload_start = datetime.datetime.now()
+            print(f"   └─ Started at: {upload_start.strftime('%H:%M:%S')}")
+            
+            try:
+                content_type = get_content_type(file_format)
+                print(f"   ├─ Content type: {content_type}")
+                
+                # Convert file buffer to temporary file for upload
+                file_extension = file_name.split('.')[-1] if '.' in file_name else 'bin'
+                print(f"   ├─ Creating temporary file with extension: .{file_extension}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
+                    temp_file.write(file_buffer)
+                    temp_file_path = temp_file.name
+                print(f"   ├─ Temporary file created: {temp_file_path}")
+                print(f"   ├─ File size: {os.path.getsize(temp_file_path):,} bytes")
+                
+                # Check microservice health first
+                print(f"   ├─ Checking microservice health...")
+                try:
+                    health_url = f"{s3_client_instance.api_base_url}/health"
+                    health_response = requests.get(health_url, timeout=10)
+                    if health_response.status_code == 200:
+                        print(f"   ├─ ✅ Microservice is reachable")
+                    else:
+                        print(f"   ├─ ⚠️  Microservice health check returned status {health_response.status_code}")
+                except Exception as health_error:
+                    print(f"   ├─ ⚠️  Microservice health check failed: {str(health_error)}")
+                    print(f"   ├─ ⚠️  Will still attempt upload, but may timeout")
+                
+                # Upload using S3 microservice
+                print(f"   ├─ Calling S3 upload...")
+                print(f"   ├─ Temp file: {temp_file_path}")
+                print(f"   ├─ File size: {os.path.getsize(temp_file_path):,} bytes")
+                print(f"   ├─ User ID: {user_id}")
+                print(f"   └─ Custom filename: {file_name}")
+                
+                upload_call_start = datetime.datetime.now()
+                try:
+                    upload_result = s3_client_instance.upload(temp_file_path, user_id=user_id, custom_file_name=file_name)
+                    upload_call_time = (datetime.datetime.now() - upload_call_start).total_seconds()
+                    print(f"   ├─ Upload call completed in {upload_call_time:.2f} seconds")
+                except Exception as upload_ex:
+                    upload_call_time = (datetime.datetime.now() - upload_call_start).total_seconds()
+                    print(f"   └─ ❌ Upload call failed after {upload_call_time:.2f} seconds: {str(upload_ex)}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+                print(f"   ├─ Temporary file deleted")
+                
+                upload_time = (datetime.datetime.now() - upload_start).total_seconds()
+                print(f"   ├─ Upload completed in {upload_time:.2f} seconds")
+                
+                if upload_result['success']:
+                    file_info = upload_result['file_info']
+                    total_duration = (datetime.datetime.now() - start_time).total_seconds()
+                    
+                    print(f"   └─ ✅ Upload successful!")
+                    print(f"\n📊 [EXPORT] Step 3/3: Finalizing...")
+                    print(f"   ├─ S3 URL: {file_info['url']}")
+                    print(f"   ├─ Stored name: {file_info.get('storedName', file_name)}")
+                    print(f"   ├─ Total time: {total_duration:.2f} seconds")
+                    print(f"   └─ ✅ Export completed successfully!")
+                    
+                    total_time = (datetime.datetime.now() - start_time_total).total_seconds()
+                    print(f"\n{'='*80}")
+                    print(f"✅ [EXPORT] SUCCESS - Total time: {total_time:.2f} seconds")
+                    print(f"{'='*80}\n")
+                    
+                    return {
+                        'success': True,
+                        'file_url': file_info['url'],
+                        'file_name': file_info.get('storedName', file_name),
+                        'metadata': {
+                            'file_size': len(file_buffer),
+                            'format': file_format,
+                            'record_count': record_count,
+                            'export_duration': total_duration,
+                            'method': 'local_export_upload'
+                        }
+                    }
+                else:
+                    error_msg = f"Upload failed: {upload_result.get('error', 'Unknown error')}"
+                    print(f"   └─ ❌ {error_msg}")
+                    raise Exception(error_msg)
+                    
+            except Exception as s3_error:
+                upload_time = (datetime.datetime.now() - upload_start).total_seconds()
+                print(f"   └─ ❌ S3 upload failed after {upload_time:.2f} seconds: {str(s3_error)}")
+                import traceback
+                traceback.print_exc()
+                print(f"\n🔄 [EXPORT] Falling back to local export...")
+                # Fallback to local save
+                return local_export_fallback(data, file_format, user_id, options)
+        
+        else:
+            # Use microservice directly for small supported formats
+            print(f"\n🌐 [EXPORT] Using MICROSERVICE DIRECT strategy")
+            print(f"   └─ Reason: Small dataset ({record_count:,} records, {data_size_mb:.2f}MB)")
+            
+            # Export using microservice
+            print(f"\n📡 [EXPORT] Calling S3 microservice...")
+            start_time = datetime.datetime.now()
+            print(f"   ├─ Started at: {start_time.strftime('%H:%M:%S')}")
+            print(f"   ├─ Format: {file_format}")
+            print(f"   ├─ Filename: {file_name}")
+            print(f"   └─ User ID: {user_id}")
+            
+            try:
+                export_result = s3_client_instance.export(data, file_format, file_name, user_id)
+                duration = (datetime.datetime.now() - start_time).total_seconds()
+                
+                print(f"   ├─ Microservice call completed in {duration:.2f} seconds")
+                
+                if export_result['success']:
+                    export_info = export_result['export_info']
+                    print(f"   └─ ✅ Export successful!")
+                    print(f"\n📊 [EXPORT] Finalizing...")
+                    print(f"   ├─ S3 URL: {export_info['url']}")
+                    print(f"   ├─ File size: {export_info.get('size', 0):,} bytes")
+                    print(f"   └─ ✅ Export completed successfully!")
+                    
+                    total_time = (datetime.datetime.now() - start_time_total).total_seconds()
+                    print(f"\n{'='*80}")
+                    print(f"✅ [EXPORT] SUCCESS - Total time: {total_time:.2f} seconds")
+                    print(f"{'='*80}\n")
+                    
+                    return {
+                        'success': True,
+                        'file_url': export_info['url'],
+                        'file_name': export_info.get('storedName', file_name),
+                        'metadata': {
+                            'file_size': export_info.get('size', 0),
+                            'format': file_format,
+                            'record_count': record_count,
+                            'export_duration': duration,
+                            'method': 'microservice_direct'
+                        }
+                    }
+                else:
+                    error_msg = export_result.get('error', 'Unknown error')
+                    print(f"   └─ ❌ Export failed: {error_msg}")
+                    total_time = (datetime.datetime.now() - start_time_total).total_seconds()
+                    print(f"\n{'='*80}")
+                    print(f"❌ [EXPORT] FAILED after {total_time:.2f} seconds")
+                    print(f"{'='*80}\n")
+                    return {
+                        'success': False,
+                        'error': error_msg
+                    }
+            except Exception as microservice_error:
+                duration = (datetime.datetime.now() - start_time).total_seconds()
+                print(f"   └─ ❌ Microservice call failed after {duration:.2f} seconds: {str(microservice_error)}")
+                import traceback
+                traceback.print_exc()
+                print(f"\n🔄 [EXPORT] Falling back to local export...")
+                return local_export_fallback(data, file_format, user_id, options)
+        
+    except Exception as e:
+        total_time = (datetime.datetime.now() - start_time_total).total_seconds()
+        print(f"\n{'='*80}")
+        print(f"❌ [EXPORT] EXCEPTION after {total_time:.2f} seconds: {str(e)}")
+        print(f"{'='*80}")
+        import traceback
+        traceback.print_exc()
+        print(f"\n🔄 [EXPORT] Falling back to local export...")
+        # Fallback to local export
+        return local_export_fallback(data, file_format, user_id, options)
+
+def local_export_fallback(data, file_format, user_id, options):
+    """Local export fallback when S3 microservice is not available"""
+    try:
+        print(f"🔄 Using local export fallback for format: {file_format}")
+        
+        # Generate filename
+        timestamp = datetime.datetime.now().timestamp()
+        if options and options.get('file_name'):
+            base_name = options.get('file_name')
+            if '.' in base_name:
+                base_name = base_name.rsplit('.', 1)[0]
+            file_name = f"{base_name}.{file_format}"
+        else:
+            file_name = f"export_{user_id}_{int(timestamp)}.{file_format}"
+        
+        # Export locally
+        export_functions = {
+            'xlsx': export_to_excel,
+            'pdf': export_to_pdf,
+            'csv': export_to_csv,
+            'json': export_to_json,
+            'xml': export_to_xml,
+            'txt': export_to_txt
+        }
+        
+        if file_format.lower() not in export_functions:
+            return {
+                'success': False,
+                'error': f'Unsupported export format: {file_format}. Supported: {list(export_functions.keys())}'
+            }
+        
+        file_buffer = export_functions[file_format.lower()](data)
+        
+        # Save locally as fallback
+        downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
+        local_path = os.path.join(downloads_path, file_name)
+        
+        with open(local_path, 'wb') as f:
+            f.write(file_buffer)
+        
+        print(f"✅ Local export successful: {local_path}")
+        
+        return {
+            'success': True,
+            'file_url': f"file://{local_path}",
+            'file_name': file_name,
+            'file_size': len(file_buffer),
+            'metadata': {
+                'file_size': len(file_buffer),
+                'format': file_format,
+                'record_count': len(data) if isinstance(data, list) else 1,
+                'method': 'local_fallback',
+                'local_path': local_path
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Local export fallback failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': f'Local export failed: {str(e)}'
+        }
 
 def create_direct_mysql_client(mysql_config: Optional[Dict] = None) -> RenderS3Client:
     """Create RenderS3Client with Direct URL and MySQL from Django settings"""

@@ -3,6 +3,7 @@ import requests
 import json
 import mysql.connector
 import os
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
@@ -13,6 +14,24 @@ import traceback
 # Load environment variables
 load_dotenv()
 
+# Try to import Django settings if available (for Azure backend)
+try:
+    import django
+    # Only import settings if Django is properly configured
+    try:
+        from django.conf import settings as django_settings
+        # Test if Django is configured by accessing a setting
+        _ = django_settings.DEBUG if hasattr(django_settings, 'DEBUG') else None
+        DJANGO_AVAILABLE = True
+    except (RuntimeError, AttributeError):
+        # Django is installed but not configured
+        DJANGO_AVAILABLE = False
+        django_settings = None
+except ImportError:
+    # Django is not installed
+    DJANGO_AVAILABLE = False
+    django_settings = None
+
 # Configure logger - only console output, no file logging
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +41,232 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("notification_service")
+
+
+class AzureEmailSender:
+    """
+    Standalone Azure AD email sender that can be used without Django
+    Integrates Azure AD OAuth2 with Microsoft Graph API for email sending
+    """
+    
+    def __init__(self):
+        # Try to get Azure AD config from Django settings first, then env vars
+        self.tenant_id = ''
+        self.client_id = ''
+        self.client_secret = ''
+        self.from_email = ''
+        
+        # Default values (can be overridden by environment variables or Django settings)
+        default_tenant_id = 'aa7c8c45-41a3-4453-bc9a-3adfe8ff5fb6'
+        default_client_id = '127107b0-7144-4246-b2f4-160263ceb3c9'
+        default_client_secret = 'sVr8Q~3b0OS~L5NFIaWGomhiGwSwFuNMnW7RPamR'
+        default_from_email = 'praharshitha.d@vardaanglobal.com'
+        
+        if DJANGO_AVAILABLE and django_settings:
+            try:
+                # Prioritize Django settings over environment variables for Azure AD email
+                # This ensures we use the correct Azure AD registered email
+                self.tenant_id = getattr(django_settings, 'AZURE_AD_TENANT_ID', '') or os.getenv('AZURE_AD_TENANT_ID', default_tenant_id)
+                self.client_id = getattr(django_settings, 'AZURE_AD_CLIENT_ID', '') or os.getenv('AZURE_AD_CLIENT_ID', default_client_id)
+                self.client_secret = getattr(django_settings, 'AZURE_AD_CLIENT_SECRET', '') or os.getenv('AZURE_AD_CLIENT_SECRET', default_client_secret)
+                # For from_email, always prefer Django settings default (praharshitha.d@vardaanglobal.com)
+                # Only use env var if Django settings doesn't have it
+                django_from_email = getattr(django_settings, 'DEFAULT_FROM_EMAIL', '')
+                if django_from_email:
+                    self.from_email = django_from_email
+                    logger.info(f"[AZURE CONFIG] Using DEFAULT_FROM_EMAIL from Django settings: {self.from_email}")
+                else:
+                    # If no Django setting, check env var, but default to Azure AD email
+                    env_from_email = os.getenv('DEFAULT_FROM_EMAIL', '')
+                    if env_from_email:
+                        # Check if env var email is Gmail - if so, use Azure AD email instead for Azure
+                        if '@gmail.com' in env_from_email.lower():
+                            logger.warning(f"[AZURE CONFIG] Environment DEFAULT_FROM_EMAIL is Gmail ({env_from_email}), using Azure AD email instead: {default_from_email}")
+                            self.from_email = default_from_email
+                        else:
+                            self.from_email = env_from_email
+                            logger.info(f"[AZURE CONFIG] Using DEFAULT_FROM_EMAIL from environment: {self.from_email}")
+                    else:
+                        self.from_email = default_from_email
+                        logger.info(f"[AZURE CONFIG] Using default Azure AD email: {self.from_email}")
+            except Exception as e:
+                logger.warning(f"Error accessing Django settings, falling back to environment variables: {str(e)}")
+                self.tenant_id = os.getenv('AZURE_AD_TENANT_ID', default_tenant_id)
+                self.client_id = os.getenv('AZURE_AD_CLIENT_ID', default_client_id)
+                self.client_secret = os.getenv('AZURE_AD_CLIENT_SECRET', default_client_secret)
+                self.from_email = os.getenv('DEFAULT_FROM_EMAIL', default_from_email)
+        else:
+            self.tenant_id = os.getenv('AZURE_AD_TENANT_ID', default_tenant_id)
+            self.client_id = os.getenv('AZURE_AD_CLIENT_ID', default_client_id)
+            self.client_secret = os.getenv('AZURE_AD_CLIENT_SECRET', default_client_secret)
+            self.from_email = os.getenv('DEFAULT_FROM_EMAIL', default_from_email)
+        
+        self.scope = 'https://graph.microsoft.com/.default'
+        
+        # Ensure from_email is always set to Azure AD email if credentials are present
+        # This prevents is_configured() from failing due to missing email
+        if self.tenant_id and self.client_id and self.client_secret:
+            if not self.from_email or '@gmail.com' in self.from_email.lower() or '@vardaanglobal.com' not in self.from_email.lower():
+                logger.info(f"[AZURE CONFIG] Setting from_email to Azure AD email: {default_from_email}")
+                self.from_email = default_from_email
+        
+        if self.is_configured():
+            logger.info("AzureEmailSender initialized and configured")
+            logger.info(f"  Tenant ID: {self.tenant_id[:8]}..." if len(self.tenant_id) > 8 else f"  Tenant ID: {self.tenant_id}")
+            logger.info(f"  Client ID: {self.client_id[:8]}..." if len(self.client_id) > 8 else f"  Client ID: {self.client_id}")
+            logger.info(f"  Client Secret: {'✓ Set' if self.client_secret else '✗ Not set'}")
+            logger.info(f"  From Email: {self.from_email}")
+        else:
+            logger.info("AzureEmailSender initialized but not fully configured (will use SMTP fallback)")
+            logger.info(f"  Tenant ID: {'✓ Set' if self.tenant_id else '✗ Missing'}")
+            logger.info(f"  Client ID: {'✓ Set' if self.client_id else '✗ Missing'}")
+            logger.info(f"  Client Secret: {'✓ Set' if self.client_secret else '✗ Missing'}")
+            logger.info(f"  From Email: {'✓ Set' if self.from_email else '✗ Missing'}")
+    
+    def _get_access_token(self):
+        """Get access token from Azure AD"""
+        try:
+            if not self.tenant_id or not self.client_id or not self.client_secret:
+                logger.warning("Missing Azure AD configuration: tenant_id, client_id, or client_secret")
+                return None
+                
+            token_url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+            
+            token_data = {
+                'client_id': self.client_id,
+                'client_secret': self.client_secret,
+                'scope': self.scope,
+                'grant_type': 'client_credentials'
+            }
+            
+            logger.info("Requesting Azure AD access token")
+            response = requests.post(token_url, data=token_data, timeout=30)
+            response.raise_for_status()
+            
+            token_response = response.json()
+            access_token = token_response.get('access_token')
+            
+            if access_token:
+                logger.info("[SUCCESS] Azure AD access token obtained successfully")
+                return access_token
+            else:
+                logger.error(f"[ERROR] No access token in response: {token_response}")
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[ERROR] Network error getting Azure AD access token: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to get Azure AD access token: {str(e)}")
+            return None
+    
+    def send_email_via_graph(self, to_email, subject, html_body, from_email=None, from_name=None):
+        """
+        Send email using Microsoft Graph API
+        
+        Args:
+            to_email: Recipient email address
+            subject: Email subject
+            html_body: HTML email body
+            from_email: Sender email (defaults to configured from_email)
+            from_name: Sender name (optional)
+        
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        try:
+            access_token = self._get_access_token()
+            if not access_token:
+                logger.warning("[WARN] No access token available for Azure Graph API")
+                return False
+            
+            sender_email = from_email or self.from_email
+            if not sender_email:
+                logger.error("[ERROR] No sender email configured")
+                return False
+            
+            # Prepare email payload for Graph API
+            email_payload = {
+                "message": {
+                    "subject": subject,
+                    "body": {
+                        "contentType": "HTML",
+                        "content": html_body
+                    },
+                    "toRecipients": [
+                        {
+                            "emailAddress": {
+                                "address": to_email
+                            }
+                        }
+                    ]
+                },
+                "saveToSentItems": True
+            }
+            
+            # Use the configured from email for Graph API
+            graph_url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            logger.info(f"[AZURE] Sending email via Graph API to: {to_email}")
+            logger.info(f"[AZURE] Using sender: {sender_email}")
+            
+            response = requests.post(graph_url, headers=headers, json=email_payload, timeout=30)
+            
+            # Check response status
+            if response.status_code == 202:
+                # 202 Accepted means the email was accepted for delivery
+                logger.info(f"[AZURE] ✅ Email accepted by Graph API (202 Accepted) - to: {to_email}")
+                return True
+            elif response.status_code == 200:
+                logger.info(f"[AZURE] ✅ Email sent successfully via Graph API (200 OK) - to: {to_email}")
+                return True
+            else:
+                # Log detailed error information
+                error_detail = response.text
+                logger.error(f"[AZURE] ❌ Graph API returned status {response.status_code}")
+                logger.error(f"[AZURE] Error response: {error_detail}")
+                try:
+                    error_json = response.json()
+                    logger.error(f"[AZURE] Error details: {json.dumps(error_json, indent=2)}")
+                except:
+                    pass
+                response.raise_for_status()  # This will raise an exception
+                return False
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[ERROR] Network error sending email via Graph API: {str(e)}")
+            logger.error(f"[ERROR] Response status: {getattr(e.response, 'status_code', 'N/A') if hasattr(e, 'response') else 'N/A'}")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.text
+                    logger.error(f"[ERROR] Response body: {error_detail[:500]}")
+                except:
+                    pass
+            return False
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to send email via Graph API: {str(e)}")
+            logger.error(f"Error details: {traceback.format_exc()}")
+            return False
+    
+    def is_configured(self):
+        """Check if Azure email sender is properly configured"""
+        # Only check for credentials - from_email will be overridden during send
+        has_creds = bool(self.tenant_id and self.client_id and self.client_secret)
+        
+        # Log configuration status for debugging
+        if not has_creds:
+            logger.warning("[AZURE CONFIG] Azure credentials missing - cannot use Azure email")
+            logger.warning(f"  Tenant ID: {'✓' if self.tenant_id else '✗'}")
+            logger.warning(f"  Client ID: {'✓' if self.client_id else '✗'}")
+            logger.warning(f"  Client Secret: {'✓' if self.client_secret else '✗'}")
+        
+        # Always return True if credentials are present - we'll override from_email during send
+        return has_creds
+
 
 class NotificationService:
     def __init__(self):
@@ -75,10 +320,41 @@ class NotificationService:
             }
         }
         
+        # Initialize Azure email sender first to get correct from_email
+        self.azure_email_sender = AzureEmailSender()
+        
+        # Log Azure configuration status at initialization (for deployment debugging)
+        logger.info("=" * 60)
+        logger.info("[NOTIFICATION SERVICE INIT] Azure Email Configuration Status")
+        logger.info(f"[NOTIFICATION SERVICE INIT] Azure Configured: {self.azure_email_sender.is_configured()}")
+        if self.azure_email_sender.is_configured():
+            logger.info("[NOTIFICATION SERVICE INIT] ✅ Azure email will be used as PRIMARY method")
+            logger.info(f"[NOTIFICATION SERVICE INIT] Azure From Email: {self.azure_email_sender.from_email}")
+        else:
+            logger.warning("[NOTIFICATION SERVICE INIT] ⚠️ Azure email NOT configured - will use SMTP only")
+            logger.warning(f"[NOTIFICATION SERVICE INIT] Missing: Tenant={not self.azure_email_sender.tenant_id}, Client={not self.azure_email_sender.client_id}, Secret={not self.azure_email_sender.client_secret}")
+        logger.info("=" * 60)
+        
+        # Set default_from - prioritize Azure sender's email, then Django settings, then env vars
+        if DJANGO_AVAILABLE and django_settings:
+            try:
+                default_email = getattr(django_settings, 'DEFAULT_FROM_EMAIL', '') or self.azure_email_sender.from_email or os.getenv('DEFAULT_FROM_EMAIL', 'praharshitha.d@vardaanglobal.com')
+                default_name = getattr(django_settings, 'DEFAULT_FROM_NAME', '') or os.getenv('DEFAULT_FROM_NAME', 'GRC System')
+            except:
+                default_email = self.azure_email_sender.from_email or os.getenv('DEFAULT_FROM_EMAIL', 'praharshitha.d@vardaanglobal.com')
+                default_name = os.getenv('DEFAULT_FROM_NAME', 'GRC System')
+        else:
+            # Use Azure sender's email if available, otherwise use env or default
+            default_email = self.azure_email_sender.from_email or os.getenv('DEFAULT_FROM_EMAIL', 'praharshitha.d@vardaanglobal.com')
+            default_name = os.getenv('DEFAULT_FROM_NAME', 'GRC System')
+        
         self.default_from = {
-            'email': os.getenv('DEFAULT_FROM_EMAIL'),
-            'name': os.getenv('DEFAULT_FROM_NAME')
+            'email': default_email,
+            'name': default_name
         }
+        
+        # Print email configuration status on initialization
+        self.print_email_configuration_status()
         
         # Initialize templates
         self.init_templates()
@@ -1292,19 +1568,28 @@ class NotificationService:
         }
 
     def send_email(self, to, email_type, notification_type, template_data):
-        """Send email notification"""
+        """Send email notification using Azure email backend first, then SMTP fallback
+        
+        Args:
+            to: Recipient email address
+            email_type: SMTP email type ('gmail', 'microsoft') - IGNORED if Azure is configured
+            notification_type: Type of notification (e.g., 'policyAcknowledgementRequired')
+            template_data: Data to populate email template
+        """
         try:
-            logger.info(f"Attempting to send email to {to} using {email_type} for {notification_type}")
+            logger.info("=" * 60)
+            logger.info(f"[EMAIL START] Attempting to send email to {to}")
+            logger.info(f"[EMAIL START] Notification Type: {notification_type}")
+            logger.info(f"[EMAIL START] Requested email_type: {email_type} (will be ignored if Azure is configured)")
+            azure_configured = self.azure_email_sender.is_configured()
+            logger.info(f"[EMAIL START] Azure configured: {azure_configured}")
+            if azure_configured:
+                logger.info(f"[EMAIL START] Azure Tenant: {self.azure_email_sender.tenant_id[:8]}...")
+                logger.info(f"[EMAIL START] Azure Client: {self.azure_email_sender.client_id[:8]}...")
+                logger.info(f"[EMAIL START] Azure From: {self.azure_email_sender.from_email}")
+                logger.info(f"[EMAIL START] ⚠️ email_type parameter '{email_type}' will be IGNORED - using Azure instead")
+            logger.info("=" * 60)
             logger.info(f"Template data: {template_data}")
-            
-            # Get email config based on type
-            config = self.email_configs.get(email_type.lower())
-            if not config:
-                error_msg = f"Unsupported email type: {email_type}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            
-            logger.info(f"Using email config: {config['host']}:{config['port']}")
             
             # Get template
             template = self.email_templates.get(notification_type)
@@ -1314,11 +1599,6 @@ class NotificationService:
                 raise ValueError(error_msg)
             
             logger.info(f"Found template for {notification_type}")
-            
-            # Create email message
-            msg = MIMEMultipart()
-            msg['From'] = f"{self.default_from['name']} <{self.default_from['email']}>"
-            msg['To'] = to
             
             # Format subject with template data if needed
             subject = template['subject']
@@ -1331,64 +1611,175 @@ class NotificationService:
                 subject = subject.replace('{subpolicy_title}', str(template_data[title_index]))
             if '{incident_title}' in subject and len(template_data) >= 2:
                 subject = subject.replace('{incident_title}', template_data[1])
-            # Add version replacement for templates that use it (index 3 in template_data)
             if '{version}' in subject and len(template_data) > 3:
                 subject = subject.replace('{version}', str(template_data[3]))
-            # Add policy_name replacement for acknowledgement template
             if '{policy_name}' in subject and len(template_data) > title_index:
                 subject = subject.replace('{policy_name}', str(template_data[title_index]))
-            # Add item_title replacement for compliance templates
             if '{item_title}' in subject and len(template_data) > title_index:
                 subject = subject.replace('{item_title}', str(template_data[title_index]))
-            # Add event_title replacement for event templates
             if '{event_title}' in subject and len(template_data) > title_index:
                 subject = subject.replace('{event_title}', str(template_data[title_index]))
+            if '{file_name}' in subject and len(template_data) > 1:
+                subject = subject.replace('{file_name}', str(template_data[1]))
+            if '{platform_name}' in subject and len(template_data) > 3:
+                subject = subject.replace('{platform_name}', str(template_data[3]))
+            if '{date}' in subject and len(template_data) > 0:
+                subject = subject.replace('{date}', str(template_data[0]))
             
-            msg['Subject'] = subject
             logger.info(f"Email subject: {subject}")
             
             # Apply template data to create HTML content
             html_content = template['template'](*template_data)
+            
+            # Try Azure email backend first (if configured)
+            # ALWAYS attempt Azure if credentials exist, even if from_email is missing (we'll set it)
+            azure_configured = self.azure_email_sender.is_configured()
+            logger.info(f"[EMAIL DEBUG] Azure configured check: {azure_configured}")
+            logger.info(f"[EMAIL DEBUG] Azure credentials present: Tenant={bool(self.azure_email_sender.tenant_id)}, Client={bool(self.azure_email_sender.client_id)}, Secret={bool(self.azure_email_sender.client_secret)}")
+            
+            if azure_configured:
+                logger.info("=" * 60)
+                logger.info("[EMAIL STATUS] 🔵 Attempting to send email via Azure AD Graph API")
+                logger.info(f"[EMAIL STATUS] Notification: {notification_type} to {to}")
+                logger.info("=" * 60)
+                # CRITICAL: Always use Azure AD registered email for Graph API
+                # Graph API requires the email to be registered in Azure AD
+                from_email = self.azure_email_sender.from_email
+                
+                # If from_email is Gmail or not set, use the Azure AD registered email
+                if not from_email or '@gmail.com' in from_email.lower():
+                    logger.warning(f"[AZURE] Invalid sender email ({from_email}), using Azure AD registered email: praharshitha.d@vardaanglobal.com")
+                    from_email = 'praharshitha.d@vardaanglobal.com'
+                
+                # Extract just the email address if it's in "Name <email>" format
+                if '<' in from_email and '>' in from_email:
+                    from_email = from_email.split('<')[1].split('>')[0].strip()
+                
+                # Final check - ensure it's the Azure AD email
+                if '@vardaanglobal.com' not in from_email.lower():
+                    logger.warning(f"[AZURE] Email {from_email} is not an Azure AD registered email, using: praharshitha.d@vardaanglobal.com")
+                    from_email = 'praharshitha.d@vardaanglobal.com'
+                
+                from_name = self.default_from.get('name', 'GRC System')
+                logger.info(f"[AZURE] ✅ Using Azure AD registered email as sender: {from_email}")
+                
+                success = self.azure_email_sender.send_email_via_graph(
+                    to_email=to,
+                    subject=subject,
+                    html_body=html_content,
+                    from_email=from_email,
+                    from_name=from_name
+                )
+                
+                if success:
+                    logger.info("=" * 60)
+                    logger.info("[EMAIL STATUS] ✅ Email sent successfully via AZURE GRAPH API")
+                    logger.info(f"[EMAIL STATUS] Recipient: {to}")
+                    logger.info(f"[EMAIL STATUS] Subject: {subject}")
+                    logger.info("=" * 60)
+                    self.log_notification(to, notification_type, 'email', True)
+                    return {"success": True, "to": to, "type": notification_type, "method": "azure_graph_api"}
+                else:
+                    logger.warning("=" * 60)
+                    logger.warning("[EMAIL STATUS] ⚠️ Azure Graph API email sending failed, falling back to SMTP")
+                    logger.warning("=" * 60)
+            
+            # Fallback to SMTP only if Azure is not configured or failed
+            if not self.azure_email_sender.is_configured():
+                logger.warning("=" * 60)
+                logger.warning("[EMAIL STATUS] ⚠️ Azure not configured - using SMTP")
+                logger.warning("=" * 60)
+            else:
+                logger.info("=" * 60)
+                logger.info("[EMAIL STATUS] 📧 Using SMTP fallback for email sending (Azure failed)")
+                logger.info(f"[EMAIL STATUS] Email Type: {email_type}")
+                logger.info("=" * 60)
+            
+            # Get email config based on type
+            config = self.email_configs.get(email_type.lower())
+            if not config:
+                error_msg = f"Unsupported email type: {email_type}"
+                logger.error(error_msg)
+                # If Azure is configured, suggest checking Azure instead
+                if self.azure_email_sender.is_configured():
+                    error_msg += ". Azure email is configured - check Azure AD permissions if emails aren't being sent."
+                raise ValueError(error_msg)
+            
+            logger.info(f"Using email config: {config['host']}:{config['port']}")
+            
+            # Create email message for SMTP
+            msg = MIMEMultipart()
+            msg['From'] = f"{self.default_from['name']} <{self.default_from['email']}>"
+            msg['To'] = to
+            msg['Subject'] = subject
             msg.attach(MIMEText(html_content, 'html'))
             
             logger.info(f"Connecting to SMTP server {config['host']}:{config['port']}")
             
-            # Connect to SMTP server and send email - handling Microsoft differently
-            if email_type.lower() == 'microsoft':
-                with smtplib.SMTP(config['host'], config['port']) as server:
-                    server.ehlo()
-                    server.starttls()
-                    server.ehlo()
-                    username = config['auth']['user']
-                    password = config['auth']['pass']
-                    logger.info(f"Attempting Microsoft SMTP auth with username: {username}")
+            # Check DNS resolution before attempting connection
+            # If DNS fails, log error but don't crash - Azure should have been used instead
+            try:
+                host_ip = socket.gethostbyname(config['host'])
+                logger.info(f"DNS resolution successful: {config['host']} -> {host_ip}")
+            except socket.gaierror as dns_error:
+                error_msg = (
+                    f"DNS resolution failed for {config['host']}. "
+                    f"This usually means:\n"
+                    f"1. DNS server is not configured properly\n"
+                    f"2. Network connectivity issues\n"
+                    f"3. Firewall blocking DNS queries\n"
+                    f"4. Container/instance has no internet access\n\n"
+                    f"Solutions:\n"
+                    f"- For Docker: Add DNS servers in docker-compose.yml (dns: [8.8.8.8, 8.8.4.4])\n"
+                    f"- For EC2: Check security groups and VPC DNS settings\n"
+                    f"- Verify internet connectivity: ping 8.8.8.8\n"
+                    f"- Check /etc/resolv.conf for DNS configuration\n\n"
+                    f"⚠️ NOTE: Azure email should be used instead. Check Azure AD configuration."
+                )
+                logger.error(error_msg)
+                logger.error(f"DNS error details: {str(dns_error)}")
+                
+                # If Azure is configured, log that it should have been used
+                if self.azure_email_sender.is_configured():
+                    logger.error("=" * 60)
+                    logger.error("[CRITICAL] Azure email is configured but was not used!")
+                    logger.error("[CRITICAL] This suggests Azure Graph API failed silently or is_configured() returned False")
+                    logger.error("[CRITICAL] Check Azure AD permissions and configuration")
+                    logger.error("=" * 60)
+                
+                # Don't raise - return error instead to allow graceful handling
+                self.log_notification(to, notification_type, 'email', False, f"SMTP DNS resolution failed: {str(dns_error)}")
+                return {"success": False, "error": f"SMTP DNS resolution failed. Azure email should be used instead. Check Azure AD configuration.", "method": "smtp"}
+            
+            # Connect to SMTP server and send email
+            with smtplib.SMTP(config['host'], config['port']) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                username = config['auth']['user']
+                password = config['auth']['pass']
+                logger.info(f"Attempting SMTP auth with username: {username}")
+                try:
                     server.login(username, password)
+                    logger.info("SMTP login successful")
                     server.send_message(msg)
-                    logger.info(f"Microsoft email sent successfully to {to}")
-            else:
-                with smtplib.SMTP(config['host'], config['port']) as server:
-                    server.ehlo()
-                    server.starttls()
-                    server.ehlo()
-                    username = config['auth']['user']
-                    password = config['auth']['pass']
-                    logger.info(f"Attempting SMTP auth with username: {username}")
-                    try:
-                        server.login(username, password)
-                        logger.info("SMTP login successful")
-                        server.send_message(msg)
-                        logger.info(f"Email sent successfully to {to}")
-                    except smtplib.SMTPAuthenticationError as auth_error:
-                        logger.error(f"SMTP Authentication failed: {str(auth_error)}")
-                        raise
-                    except Exception as smtp_error:
-                        logger.error(f"SMTP error: {str(smtp_error)}")
-                        raise
+                    logger.info("=" * 60)
+                    logger.info("[EMAIL STATUS] ✅ Email sent successfully via SMTP")
+                    logger.info(f"[EMAIL STATUS] Recipient: {to}")
+                    logger.info(f"[EMAIL STATUS] SMTP Server: {config['host']}:{config['port']}")
+                    logger.info(f"[EMAIL STATUS] Subject: {subject}")
+                    logger.info("=" * 60)
+                except smtplib.SMTPAuthenticationError as auth_error:
+                    logger.error(f"SMTP Authentication failed: {str(auth_error)}")
+                    raise
+                except Exception as smtp_error:
+                    logger.error(f"SMTP error: {str(smtp_error)}")
+                    raise
             
             # Log notification in database
             self.log_notification(to, notification_type, 'email', True)
             
-            return {"success": True, "to": to, "type": notification_type}
+            return {"success": True, "to": to, "type": notification_type, "method": "smtp"}
             
         except Exception as e:
             error_msg = f"Error sending email: {str(e)}"
@@ -1495,6 +1886,96 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error in get_user_email_by_id for {user_id}: {str(e)}")
             return None, None
+    
+    def check_email_configuration(self):
+        """
+        Check and display email configuration status.
+        Returns a dictionary with configuration details.
+        """
+        config_status = {
+            "azure_configured": False,
+            "azure_details": {},
+            "smtp_configured": False,
+            "smtp_details": {},
+            "recommended_method": None
+        }
+        
+        # Check Azure configuration
+        if self.azure_email_sender.is_configured():
+            config_status["azure_configured"] = True
+            config_status["azure_details"] = {
+                "tenant_id": "✓ Set" if self.azure_email_sender.tenant_id else "✗ Missing",
+                "client_id": "✓ Set" if self.azure_email_sender.client_id else "✗ Missing",
+                "client_secret": "✓ Set" if self.azure_email_sender.client_secret else "✗ Missing",
+                "from_email": self.azure_email_sender.from_email or "✗ Missing"
+            }
+            config_status["recommended_method"] = "azure_graph_api"
+        else:
+            config_status["azure_details"] = {
+                "tenant_id": "✗ Missing",
+                "client_id": "✗ Missing",
+                "client_secret": "✗ Missing",
+                "from_email": "✗ Missing",
+                "message": "Azure AD credentials not configured. Will use SMTP fallback."
+            }
+        
+        # Check SMTP configuration
+        for email_type, config in self.email_configs.items():
+            if config.get('auth', {}).get('user') and config.get('auth', {}).get('pass'):
+                config_status["smtp_configured"] = True
+                config_status["smtp_details"][email_type] = {
+                    "host": config.get('host', 'N/A'),
+                    "port": config.get('port', 'N/A'),
+                    "user": "✓ Set" if config.get('auth', {}).get('user') else "✗ Missing",
+                    "password": "✓ Set" if config.get('auth', {}).get('pass') else "✗ Missing"
+                }
+        
+        if not config_status["recommended_method"]:
+            config_status["recommended_method"] = "smtp" if config_status["smtp_configured"] else "none"
+        
+        return config_status
+    
+    def print_email_configuration_status(self):
+        """
+        Print email configuration status to logs for debugging.
+        """
+        status = self.check_email_configuration()
+        
+        logger.info("=" * 70)
+        logger.info("EMAIL CONFIGURATION STATUS")
+        logger.info("=" * 70)
+        
+        logger.info("\n[AZURE EMAIL BACKEND]")
+        if status["azure_configured"]:
+            logger.info("  Status: ✅ CONFIGURED - Will attempt to use Azure Graph API first")
+            for key, value in status["azure_details"].items():
+                logger.info(f"    {key}: {value}")
+        else:
+            logger.info("  Status: ❌ NOT CONFIGURED - Will use SMTP fallback")
+            for key, value in status["azure_details"].items():
+                logger.info(f"    {key}: {value}")
+        
+        logger.info("\n[SMTP FALLBACK]")
+        if status["smtp_configured"]:
+            logger.info("  Status: ✅ CONFIGURED")
+            for email_type, details in status["smtp_details"].items():
+                logger.info(f"    {email_type.upper()}:")
+                for key, value in details.items():
+                    logger.info(f"      {key}: {value}")
+        else:
+            logger.info("  Status: ❌ NOT CONFIGURED")
+        
+        logger.info(f"\n[RECOMMENDED METHOD]")
+        if status["recommended_method"] == "azure_graph_api":
+            logger.info("  ✅ Using: Azure Graph API (Primary)")
+        elif status["recommended_method"] == "smtp":
+            logger.info("  ⚠️  Using: SMTP (Fallback)")
+        else:
+            logger.info("  ❌ ERROR: No email method configured!")
+        
+        logger.info("=" * 70)
+        
+        return status
 
     def send_compliance_clone_notification(self, compliance, reviewer_id):
         """
@@ -1617,7 +2098,8 @@ class NotificationService:
                 if email_result.get('success'):
                     results['email'] = {
                         'to': notification_data['email'],
-                        'type': notification_data['email_type']
+                        'type': notification_data['email_type'],
+                        'method': email_result.get('method', 'unknown')  # 'azure_graph_api' or 'smtp'
                     }
                 else:
                     results['errors'].append({
@@ -1674,54 +2156,85 @@ class NotificationService:
             }
         }
     
-    # 
+    def test_email_sending(self, test_email=None):
+        """
+        Test method to verify email sending is working.
+        Sends a test email and returns status information.
+        
+        Args:
+            test_email: Email address to send test email to (optional)
+        
+        Returns:
+            dict: Test results with configuration and sending status
+        """
+        logger.info("=" * 70)
+        logger.info("EMAIL TESTING - Starting Email Configuration Test")
+        logger.info("=" * 70)
+        
+        # Get configuration status
+        config_status = self.check_email_configuration()
+        
+        if not test_email:
+            logger.warning("No test email provided. Skipping actual email send.")
+            return {
+                "configuration_status": config_status,
+                "test_email_sent": False,
+                "message": "Configuration checked. Provide test_email parameter to send actual test email."
+            }
+        
+        # Send test email
+        test_data = {
+            'notification_type': 'welcome',
+            'email': test_email,
+            'email_type': 'gmail',  # This will be ignored, will use Azure if configured
+            'template_data': ['Test User', 'GRC System']
+        }
+        
+        logger.info(f"\nSending test email to: {test_email}")
+        result = self.send_multi_channel_notification(test_data)
+        
+        test_result = {
+            "configuration_status": config_status,
+            "test_email_sent": result.get('success', False),
+            "method_used": result.get('details', {}).get('email', {}).get('method', 'unknown'),
+            "result": result
+        }
+        
+        logger.info("=" * 70)
+        logger.info("EMAIL TESTING - Results Summary")
+        logger.info("=" * 70)
+        logger.info(f"Configuration: {'✅ Azure' if config_status['azure_configured'] else '⚠️ SMTP Only'}")
+        logger.info(f"Test Email Sent: {'✅ Yes' if test_result['test_email_sent'] else '❌ No'}")
+        if 'method_used' in test_result and test_result['method_used'] != 'unknown':
+            logger.info(f"Method Used: {test_result['method_used']}")
+        logger.info("=" * 70)
+        
+        return test_result
     
-# Example usage
+# Example usage and testing
 if __name__ == "__main__":
     # Initialize notification service
     notification_service = NotificationService()
     
-    # # Create database tables
-    # try:
-    #     notification_service.create_database_tables()
-    # except Exception as e:
-    #     logger.error(f"Failed to create database tables: {str(e)}")
+    # Check email configuration
+    print("\n" + "="*70)
+    print("EMAIL CONFIGURATION CHECK")
+    print("="*70)
+    config_status = notification_service.check_email_configuration()
+    print(f"Azure Configured: {config_status['azure_configured']}")
+    print(f"SMTP Configured: {config_status['smtp_configured']}")
+    print(f"Recommended Method: {config_status['recommended_method']}")
     
-    # Example 1: Welcome email
-    welcome_data = {
-        'notification_type': 'welcome',
-        'email': 'syammuni916@gmail.com',
-        'email_type': 'gmail',
-        'template_data': ['Muni syam putthuru', 'GRC']
-    }
+    # Uncomment below to test actual email sending
+    # test_result = notification_service.test_email_sending(test_email='your-email@example.com')
+    # print(f"\nTest Result: {test_result}")
     
-    # Example 2: Policy submitted notification (both email and WhatsApp)
-    policy_data = {
-        'notification_type': 'policySubmitted',
-        'email': 'syammuni916@gmail.com',
-        'email_type': 'gmail',
-        # 'whatsapp_number': '1234567890',
-        'template_data': ['Jane Smith', 'Data Privacy Policy', 'John Doe', '2023-08-15']
-    }
-    
-    # Example 3: Incident assigned notification
-    incident_data = {
-        'notification_type': 'incidentAssigned',
-        'email': 'security@example.com',
-        'email_type': 'gmail',
-        'whatsapp_number': '9876543210',
-        'template_data': ['Security Team', 'Data Breach Investigation', '2023-08-10']
-    }
-    
-    # Send notifications using multi-channel method
-    # print("Sending welcome notification...")
-    # result1 = notification_service.send_multi_channel_notification(welcome_data)
-    # print(f"Result: {result1}")
-    
-    print("\nSending policy notification...")
-    result2 = notification_service.send_multi_channel_notification(policy_data)
-    print(f"Result: {result2}")
-    
-    # print("\nSending incident notification...")
-    # result3 = notification_service.send_multi_channel_notification(policy_data)
-    # print(f"Result: {result3}")
+    # Example: Policy submitted notification
+    # policy_data = {
+    #     'notification_type': 'policySubmitted',
+    #     'email': 'recipient@example.com',
+    #     'email_type': 'gmail',  # Will use Azure if configured, SMTP if not
+    #     'template_data': ['Jane Smith', 'Data Privacy Policy', 'John Doe', '2023-08-15']
+    # }
+    # result = notification_service.send_multi_channel_notification(policy_data)
+    # print(f"Result: {result}")

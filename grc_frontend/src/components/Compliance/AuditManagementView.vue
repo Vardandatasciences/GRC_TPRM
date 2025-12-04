@@ -163,12 +163,14 @@
           :unique-key="'ComplianceId'"
           :default-page-size="20"
           :page-size-options="[10, 20, 50, 100, 'all']"
+          :get-row-class="getRowClass"
           @open-column-chooser="toggleColumnEditor"
+          @row-click="handleRowClick"
         >
                      <template #cell-AuditId="{ value }">
-             <a v-if="value !== 'N/A'" href="#" class="audit-id-link" @click.prevent="handleAuditClick(value)" title="Click to view audit details">
+             <span v-if="value !== 'N/A'" class="audit-id-link" title="Click row to view audit details">
                <i class="fas fa-external-link-alt"></i> {{ value }}
-             </a>
+             </span>
              <span v-else>{{ value }}</span>
            </template>
            
@@ -317,17 +319,8 @@ const filteredCompliances = computed(() => {
     console.log('ℹ️ DEBUG: No framework selected, showing all compliances')
   }
 
-  if (selectedStatus.value) {
-    filtered = filtered.filter(compliance => {
-      // Check if any audit finding matches the selected status
-      if (compliance.AuditFindings && compliance.AuditFindings.length > 0) {
-        return compliance.AuditFindings.some(finding => getStatusText(finding.CompletionStatus) === selectedStatus.value)
-      } else {
-        // If no audit findings, check if status is "Not Audited"
-        return selectedStatus.value === 'Not Audited'
-      }
-    })
-  }
+  // Note: Status filtering is done at row level in tableData computed property
+  // to ensure accurate filtering of individual audit findings
 
   if (selectedCategory.value) {
     filtered = filtered.filter(compliance => compliance.RiskCategory === selectedCategory.value)
@@ -428,6 +421,7 @@ const tableData = computed(() => {
     // If there are audit findings, create a row for each finding
     if (compliance.AuditFindings && compliance.AuditFindings.length > 0) {
       compliance.AuditFindings.forEach(finding => {
+        const rowStatus = getStatusText(finding.CompletionStatus)
         flattenedData.push({
           ComplianceId: compliance.ComplianceId,
           AuditId: finding.AuditId || 'N/A',
@@ -435,7 +429,7 @@ const tableData = computed(() => {
           BusinessUnitsCovered: compliance.BusinessUnitsCovered || 'N/A',
           RiskCategory: compliance.RiskCategory || 'N/A',
           Criticality: compliance.Criticality || 'N/A',
-          CompletionStatus: getStatusText(finding.CompletionStatus),
+          CompletionStatus: rowStatus,
           PolicyName: compliance.PolicyName || 'N/A',
           SubPolicyName: compliance.SubPolicyName || 'N/A',
           CompletionDate: finding.CompletionDate ? new Date(finding.CompletionDate).toLocaleDateString() : 'N/A'
@@ -458,8 +452,14 @@ const tableData = computed(() => {
     }
   })
   
+  // Apply status filter at row level for accurate filtering
+  let filteredRows = flattenedData
+  if (selectedStatus.value) {
+    filteredRows = flattenedData.filter(row => row.CompletionStatus === selectedStatus.value)
+  }
+  
   // Sort by audit status: audited first, not audited last
-  return flattenedData.sort((a, b) => {
+  return filteredRows.sort((a, b) => {
     const aStatus = a.CompletionStatus
     const bStatus = b.CompletionStatus
     
@@ -828,6 +828,22 @@ function handleAuditClick(auditId) {
       duration: 3000
     })
   }
+}
+
+function handleRowClick(row) {
+  // Navigate to audit details when clicking anywhere on the row
+  const auditId = row.AuditId
+  if (auditId && auditId !== 'N/A') {
+    handleAuditClick(auditId)
+  }
+}
+
+function getRowClass(row) {
+  // Add clickable class if row has a valid AuditId
+  if (row.AuditId && row.AuditId !== 'N/A') {
+    return 'clickable-audit-row'
+  }
+  return 'non-clickable-audit-row'
 }
 
 
@@ -1393,7 +1409,6 @@ async function handleExport(format) {
   margin-bottom: 12px;
 }
 
-.audit-management-container .audit-id-link,
 .audit-management-container .audit-findings-link {
   color: #2563eb;
   text-decoration: none;
@@ -1407,7 +1422,6 @@ async function handleExport(format) {
   background: rgba(37, 99, 235, 0.05);
 }
 
-.audit-management-container .audit-id-link:hover,
 .audit-management-container .audit-findings-link:hover {
   color: #1d4ed8;
   background: rgba(37, 99, 235, 0.1);
@@ -1415,7 +1429,6 @@ async function handleExport(format) {
   transform: translateY(-1px);
 }
 
-.audit-management-container .audit-id-link i,
 .audit-management-container .audit-findings-link i {
   font-size: 12px;
   opacity: 0.8;
@@ -1580,6 +1593,43 @@ async function handleExport(format) {
 
 :deep(.dynamic-table tbody tr td) {
   background: #ffffff !important;
+}
+
+/* Make table rows clickable */
+:deep(.dynamic-table tbody tr.clickable-audit-row) {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(.dynamic-table tbody tr.clickable-audit-row:hover) {
+  background: #f0f7ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+:deep(.dynamic-table tbody tr.non-clickable-audit-row) {
+  cursor: default;
+}
+
+:deep(.dynamic-table tbody tr.non-clickable-audit-row:hover) {
+  background: #f9fafb !important;
+}
+
+/* Prevent link styling conflicts - make audit ID look like regular text but with icon */
+.audit-management-container .audit-id-link {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none; /* Prevent link clicks since row handles navigation */
+}
+
+.audit-management-container .audit-id-link i {
+  font-size: 12px;
+  opacity: 0.7;
+  color: #2563eb;
 }
 
 /* Force proper word wrapping for compliance headers */

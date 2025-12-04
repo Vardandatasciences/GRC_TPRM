@@ -68,10 +68,14 @@ def _call_openai_api(prompt, audit_id=None, document_id=None, model_type='compli
     if not api_key or api_key == 'your-openai-api-key-here':
         raise Exception("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
     
-    model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini')
+    # Clean model name - strip quotes and whitespace to avoid "invalid model ID" errors
+    model_raw = getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini')
+    model = str(model_raw).strip().strip('"').strip("'")
     temperature = getattr(settings, 'OPENAI_TEMPERATURE', 0.1)
     max_tokens = getattr(settings, 'OPENAI_MAX_TOKENS', 4000)
     timeout = getattr(settings, 'OPENAI_TIMEOUT', 60)
+    
+    logger.info(f"🔍 Model check - Original: '{model_raw}', Cleaned: '{model}'")
     
     # Generate deterministic seed for OpenAI (using user parameter)
     seed = generate_deterministic_seed(document_id or 0, audit_id or 0) if document_id and audit_id else 42
@@ -82,7 +86,7 @@ def _call_openai_api(prompt, audit_id=None, document_id=None, model_type='compli
     }
     
     payload = {
-        'model': model,
+        'model': model,  # Use cleaned model name
         'messages': [
             {'role': 'system', 'content': 'You are an expert GRC (Governance, Risk & Compliance) auditor with deep expertise in regulatory frameworks, compliance standards, and audit methodologies. You excel at conducting comprehensive compliance assessments, identifying gaps, evaluating risks, and providing actionable recommendations. Always provide accurate, detailed, and consistent analysis in valid JSON format. Focus on evidence-based assessments and practical compliance solutions.'},
             {'role': 'user', 'content': prompt}
@@ -97,6 +101,8 @@ def _call_openai_api(prompt, audit_id=None, document_id=None, model_type='compli
         payload['seed'] = seed
     
     logger.info(f"🤖 Calling OpenAI API with model: {model}, temperature: {temperature}")
+    logger.info(f"🔍 Payload keys: {list(payload.keys())}")
+    logger.info(f"🔍 Model in payload: '{payload['model']}'")
     
     try:
         response = requests.post(
@@ -107,8 +113,31 @@ def _call_openai_api(prompt, audit_id=None, document_id=None, model_type='compli
         )
         
         if response.status_code != 200:
-            error_data = response.json() if response.content else {}
-            error_msg = error_data.get('error', {}).get('message', 'Unknown error')
+            # Enhanced error logging
+            error_msg = 'Unknown error'
+            try:
+                error_data = response.json() if response.content else {}
+                error_obj = error_data.get('error', {})
+                if isinstance(error_obj, dict):
+                    error_msg = error_obj.get('message', 'Unknown error')
+                    error_type = error_obj.get('type', 'Unknown type')
+                    error_code = error_obj.get('code', 'Unknown code')
+                    logger.error(f"🔍 OpenAI Error Details:")
+                    logger.error(f"   Status Code: {response.status_code}")
+                    logger.error(f"   Type: {error_type}")
+                    logger.error(f"   Code: {error_code}")
+                    logger.error(f"   Message: {error_msg}")
+                    logger.error(f"   Full error: {error_obj}")
+                    logger.error(f"   Model sent: '{model}'")
+                    logger.error(f"   Payload: {json.dumps(payload, indent=2)}")
+                else:
+                    error_msg = str(error_obj) if error_obj else 'Unknown error'
+                    logger.error(f"🔍 OpenAI Error Response: {error_data}")
+            except Exception as parse_err:
+                logger.error(f"⚠️  Could not parse error response: {parse_err}")
+                logger.error(f"   Raw response text: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
+                error_msg = f"HTTP {response.status_code} error - could not parse response"
+            
             raise Exception(f"OpenAI API error {response.status_code}: {error_msg}")
         
         result = response.json()

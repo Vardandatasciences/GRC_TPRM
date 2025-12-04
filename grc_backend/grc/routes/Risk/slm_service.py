@@ -37,10 +37,35 @@ class OpenAIIntegration:
             print("OpenAI client is not available")
             return None
 
+        # Clean model name - strip quotes and whitespace
+        model_clean = str(model).strip().strip('"').strip("'")
+        model_lower = model_clean.lower()
+        
+        print(f"🔍 Model check - Original: '{model}', Cleaned: '{model_clean}', Lower: '{model_lower}'")
+        
+        # Models that support json_object response_format:
+        # gpt-4-turbo-preview, gpt-4-0125-preview, gpt-3.5-turbo-1106, gpt-4-turbo, gpt-4o
+        # Note: gpt-4o-mini does NOT support json_object format
+        # Explicitly exclude gpt-4o-mini first (it contains "gpt-4o" but doesn't support json_object)
+        if "gpt-4o-mini" in model_lower:
+            supports_json_format = False
+            print(f"🔍 Model '{model_clean}' is gpt-4o-mini - NOT adding response_format")
+        else:
+            # Check if model exactly matches or starts with a supported model
+            models_with_json_support = [
+                "gpt-4-turbo-preview", "gpt-4-0125-preview", "gpt-3.5-turbo-1106", 
+                "gpt-4-turbo", "gpt-4o"
+            ]
+            supports_json_format = any(
+                model_lower == supported_model.lower() or model_lower.startswith(supported_model.lower() + "-")
+                for supported_model in models_with_json_support
+            )
+            print(f"🔍 Model '{model_clean}' supports_json_format check result: {supports_json_format}")
+
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
+            request_params = {
+                "model": model_clean,  # Use cleaned model name
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are a senior risk analyst specializing in banking GRC (Governance, Risk, and Compliance) systems. You provide detailed, structured risk assessments in JSON format."
@@ -50,13 +75,40 @@ class OpenAIIntegration:
                         "content": prompt
                     }
                 ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format={"type": "json_object"}  # Force JSON response
-            )
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+            
+            # Only add response_format for models that support it
+            if supports_json_format:
+                request_params["response_format"] = {"type": "json_object"}
+                print(f"✅ Adding response_format: json_object (model '{model_clean}' supports it)")
+            else:
+                print(f"⚠️  NOT adding response_format (model '{model_clean}' does not support json_object)")
+            
+            print(f"🔍 Request params keys: {list(request_params.keys())}")
+            
+            response = self.client.chat.completions.create(**request_params)
             
             return response.choices[0].message.content
         except Exception as e:
+            error_type = type(e).__name__
+            error_message = str(e)
+            print(f"❌ OpenAI API error: {error_type}: {error_message}")
+            
+            # Enhanced error logging for OpenAI SDK exceptions
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.json() if hasattr(e.response, 'json') else {}
+                    error_detail = error_body.get('error', {})
+                    if isinstance(error_detail, dict):
+                        print(f"🔍 OpenAI Error Details:")
+                        print(f"   Type: {error_detail.get('type', 'Unknown')}")
+                        print(f"   Code: {error_detail.get('code', 'Unknown')}")
+                        print(f"   Message: {error_detail.get('message', 'Unknown error')}")
+                        print(f"   Full error: {error_detail}")
+                except Exception as parse_err:
+                    print(f"⚠️  Could not parse error response: {parse_err}")
             print(f"Error calling OpenAI API: {e}")
             traceback.print_exc()
             return None

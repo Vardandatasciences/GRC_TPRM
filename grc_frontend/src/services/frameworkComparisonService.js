@@ -233,6 +233,43 @@ const frameworkComparisonService = {
       console.error(`Error checking updates for framework ${frameworkId}:`, error);
       throw error;
     }
+  },
+
+  /**
+   * Get amendment document info for a framework
+   */
+  async getAmendmentDocumentInfo(frameworkId) {
+    try {
+      const response = await axios.get(
+        API_ENDPOINTS.CHANGE_MGMT_DOCUMENT_INFO(frameworkId),
+        {
+          withCredentials: true
+        }
+      );
+      return response.data;
+    } catch (error) {
+      console.error(`Error fetching document info for framework ${frameworkId}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Start manual analysis of amendment document
+   */
+  async startAmendmentAnalysis(frameworkId) {
+    try {
+      const response = await axios.post(
+        API_ENDPOINTS.CHANGE_MGMT_START_ANALYSIS(frameworkId),
+        {},
+        {
+          withCredentials: true
+        }
+      );
+      return response.data;
+    } catch (error) {
+      console.error(`Error starting analysis for framework ${frameworkId}:`, error);
+      throw error;
+    }
   }
 };
 

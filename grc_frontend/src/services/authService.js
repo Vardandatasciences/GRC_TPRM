@@ -9,12 +9,9 @@ class AuthService {
         this.refreshToken = localStorage.getItem('refresh_token')
         this.isLoggingOut = false // Flag to prevent refresh during logout
         this.isRefreshing = false // Flag to prevent multiple simultaneous refresh attempts
-        this.refreshPromise = null // Promise for ongoing refresh to prevent duplicates
         this.failedRefreshAttempts = 0 // Track failed refresh attempts
         this.maxRefreshAttempts = 3 // Maximum number of refresh attempts
         this.refreshInterval = null // Periodic refresh interval
-        this.lastRefreshAttempt = 0 // Timestamp of last refresh attempt
-        this.refreshCooldown = 60000 // 1 minute cooldown after failed refresh
         this.setupAxiosInterceptors()
         this.startPeriodicTokenRefresh()
     }
@@ -28,18 +25,44 @@ class AuthService {
                     return Promise.reject(new Error('Logging out'))
                 }
                
-                // Check if token is expired and refresh if needed
-                await this.checkAndRefreshToken()
+                // Skip auth check for login/refresh endpoints
+                const isAuthEndpoint = config.url && (
+                    config.url.includes('/api/jwt/login/') ||
+                    config.url.includes('/api/jwt/refresh/') ||
+                    config.url.includes('/api/login/') ||
+                    config.url.includes('/api/logout/')
+                )
                
-                const token = localStorage.getItem('access_token')
-                if (token) {
-                    config.headers.Authorization = `Bearer ${token}`
-                    // Reduced logging - only log for important requests
-                    if (config.url.includes('/jwt/') || config.url.includes('/api/risk/')) {
-                        console.log(`🔐 [AuthService] Adding JWT token to request: ${config.method.toUpperCase()} ${config.url}`)
+                if (!isAuthEndpoint) {
+                    const token = localStorage.getItem('access_token')
+                    if (token) {
+                        // Only check and refresh token if it's close to expiring (not on every request)
+                        // This prevents unnecessary refresh attempts that could cause logout loops
+                        const accessTokenExpires = localStorage.getItem('access_token_expires')
+                        if (accessTokenExpires) {
+                            const expirationTime = new Date(accessTokenExpires)
+                            const currentTime = new Date()
+                            const timeUntilExpiration = expirationTime.getTime() - currentTime.getTime()
+                            
+                            // Only refresh if token expires in less than 10 minutes
+                            if (timeUntilExpiration < 10 * 60 * 1000 && timeUntilExpiration > 0) {
+                                // Token is close to expiring, try to refresh (but don't block the request if it fails)
+                                this.checkAndRefreshToken().catch(err => {
+                                    console.warn('⚠️ Token refresh check failed (non-blocking):', err.message)
+                                })
+                            }
+                        }
+                        
+                        config.headers.Authorization = `Bearer ${token}`
+                        // Reduced logging - only log for important requests
+                        if (config.url.includes('/jwt/') || config.url.includes('/api/risk/')) {
+                            console.log(`🔐 [AuthService] Adding JWT token to request: ${config.method.toUpperCase()} ${config.url}`)
+                        }
+                    } else {
+                        // No token available - but don't block the request, let it go through
+                        // The backend will return 401 if auth is required, and the response interceptor will handle it
+                        console.warn(`⚠️ [AuthService] No JWT token found for request: ${config.method.toUpperCase()} ${config.url}`)
                     }
-                } else {
-                    console.warn(`⚠️ [AuthService] No JWT token found for request: ${config.method.toUpperCase()} ${config.url}`)
                 }
                 return config
             },
@@ -66,13 +89,19 @@ class AuthService {
                
                 // Handle 401 errors (token expired)
                 if (error.response && error.response.status === 401 && !originalRequest._retry) {
+                    // Don't try to refresh if we're already refreshing or logging out
+                    if (this.isRefreshing || this.isLoggingOut) {
+                        console.warn('⚠️ Refresh already in progress or logging out - skipping refresh attempt')
+                        return Promise.reject(error)
+                    }
+                    
                     console.log('🔄 401 error detected - attempting token refresh...')
                    
                     // Mark this request as retried to prevent infinite loops
                     originalRequest._retry = true
                    
                     try {
-                        // Attempt to refresh the token (will use existing promise if refresh in progress)
+                        // Attempt to refresh the token
                         const refreshSuccess = await this.refreshAccessToken()
                        
                         if (refreshSuccess) {
@@ -88,12 +117,13 @@ class AuthService {
                             return axios(originalRequest)
                         } else {
                             console.warn('❌ Token refresh failed - user will need to login again')
-                            // Don't force logout, let the user continue with limited access
+                            // Don't force logout immediately - let the user continue with limited access
+                            // Only clear tokens if we've exceeded max attempts (handled in refreshAccessToken)
                             return Promise.reject(error)
                         }
                     } catch (refreshError) {
                         console.error('❌ Error during token refresh:', refreshError)
-                        // Don't force logout, let the user continue with limited access
+                        // Don't force logout immediately - let the user continue with limited access
                         return Promise.reject(error)
                     }
                 }
@@ -109,9 +139,7 @@ class AuthService {
             // Reset flags on login
             this.isLoggingOut = false
             this.isRefreshing = false
-            this.refreshPromise = null
             this.failedRefreshAttempts = 0
-            this.lastRefreshAttempt = 0
            
             // ========================================
             // LICENSE VALIDATION PROCESS - AUTH SERVICE
@@ -319,26 +347,24 @@ class AuthService {
  
     async checkAndRefreshToken() {
         try {
-            // Don't check if we're logging out or already refreshing
-            if (this.isLoggingOut || this.isRefreshing) {
-                // If there's an ongoing refresh, wait for it
-                if (this.refreshPromise) {
-                    return await this.refreshPromise
-                }
+            // Don't refresh if we're already refreshing or logging out
+            if (this.isRefreshing || this.isLoggingOut) {
                 return false
             }
-
-            // Check cooldown period after failed refresh
-            const now = Date.now()
-            if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
-                const remainingCooldown = Math.ceil((this.refreshCooldown - (now - this.lastRefreshAttempt)) / 1000)
-                console.log(`⏳ Refresh cooldown active. Wait ${remainingCooldown}s before next attempt.`)
+            
+            // First check if we have an access token at all
+            const accessToken = localStorage.getItem('access_token')
+            if (!accessToken) {
+                // No token available, can't refresh
                 return false
             }
-
+            
             const accessTokenExpires = localStorage.getItem('access_token_expires')
             if (!accessTokenExpires) {
-                console.warn('⚠️ No access token expiration found')
+                // Token exists but no expiration info - don't try to refresh automatically
+                // This prevents unnecessary refresh attempts that could cause logout loops
+                // The token will be validated by the backend, and if it's invalid, the response interceptor will handle it
+                console.warn('⚠️ No access token expiration found - skipping automatic refresh')
                 return false
             }
 
@@ -346,8 +372,8 @@ class AuthService {
             const currentTime = new Date()
             const timeUntilExpiration = expirationTime.getTime() - currentTime.getTime()
            
-            // Refresh token if it expires in less than 10 minutes (more aggressive)
-            if (timeUntilExpiration < 10 * 60 * 1000) {
+            // Only refresh if token expires in less than 10 minutes AND is not already expired
+            if (timeUntilExpiration < 10 * 60 * 1000 && timeUntilExpiration > 0) {
                 console.log('🔄 Access token expires soon, refreshing...')
                 return await this.refreshAccessToken()
             }
@@ -360,110 +386,76 @@ class AuthService {
     }
  
     async refreshAccessToken() {
-        // If there's already a refresh in progress, return that promise
-        if (this.refreshPromise) {
-            console.log('🔄 Refresh already in progress, waiting for existing refresh...')
-            return await this.refreshPromise
-        }
-
-        // Don't refresh if we're logging out
-        if (this.isLoggingOut) {
-            console.log('🛑 Refresh blocked: isLoggingOut=' + this.isLoggingOut)
-            return false
-        }
-
-        // Check if we've exceeded max refresh attempts
-        if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
-            console.error('❌ Max refresh attempts exceeded. Clearing tokens to force re-login.')
-            this.clearAuthData()
-            return false
-        }
-
-        // Check cooldown period after failed refresh
-        const now = Date.now()
-        if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
-            const remainingCooldown = Math.ceil((this.refreshCooldown - (now - this.lastRefreshAttempt)) / 1000)
-            console.log(`⏳ Refresh cooldown active. Wait ${remainingCooldown}s before next attempt.`)
-            return false
-        }
-
-        // Create refresh promise to prevent duplicate refreshes
-        this.isRefreshing = true
-        this.refreshPromise = (async () => {
-            try {
-                const refreshToken = localStorage.getItem('refresh_token')
-                if (!refreshToken) {
-                    console.error('❌ No refresh token available')
-                    this.failedRefreshAttempts++
-                    this.lastRefreshAttempt = Date.now()
-                    throw new Error('No refresh token available')
-                }
-
-                this.lastRefreshAttempt = Date.now()
- 
-                const response = await axios.post(`${this.baseURL}/api/jwt/refresh/`, {
-                    refresh_token: refreshToken
-                })
- 
-                if (response.data.status === 'success') {
-                    const { access_token, refresh_token, access_token_expires, refresh_token_expires } = response.data
-                   
-                    // Update stored tokens - CRITICAL: Also update refresh token (token rotation)
-                    localStorage.setItem('access_token', access_token)
-                    localStorage.setItem('access_token_expires', access_token_expires)
-                    
-                    // BUGFIX: Save new refresh token to prevent 401 loop
-                    // Backend rotates refresh tokens for security, so we must save the new one
-                    if (refresh_token) {
-                        localStorage.setItem('refresh_token', refresh_token)
-                        console.log('🔄 Refresh token updated (token rotation)')
-                    }
-                    if (refresh_token_expires) {
-                        localStorage.setItem('refresh_token_expires', refresh_token_expires)
-                    }
-                   
-                    // Update axios default headers
-                    axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
-                   
-                    // Reset failed attempts counter on success
-                    this.failedRefreshAttempts = 0
-                    this.lastRefreshAttempt = 0 // Reset cooldown on success
-                    
-                    console.log('🔄 JWT token refreshed successfully')
-                    return true
-                } else {
-                    this.failedRefreshAttempts++
-                    throw new Error(response.data.message || 'Token refresh failed')
-                }
-            } catch (error) {
-                console.error('❌ JWT token refresh error:', error)
-                
-                // Handle 401 errors specifically (refresh token invalid/expired)
-                if (error.response && error.response.status === 401) {
-                    console.error('❌ Refresh token is invalid or expired (401). User needs to re-login.')
-                    this.failedRefreshAttempts = this.maxRefreshAttempts // Force max attempts
-                    this.lastRefreshAttempt = Date.now()
-                    // Don't clear auth data immediately - let user continue with limited access
-                    // They'll be prompted to login when they try to access protected resources
-                } else {
-                    this.failedRefreshAttempts++
-                    this.lastRefreshAttempt = Date.now()
-                }
-                
-                // If we've failed too many times, clear auth data to force re-login
-                if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
-                    console.error('❌ Too many failed refresh attempts. User needs to re-login.')
-                    // Don't clear immediately - let periodic refresh handle it
-                }
-                
+        try {
+            // Don't refresh if we're logging out or already refreshing
+            if (this.isLoggingOut || this.isRefreshing) {
+                console.log('🛑 Refresh blocked: isLoggingOut=' + this.isLoggingOut + ', isRefreshing=' + this.isRefreshing)
                 return false
-            } finally {
-                this.isRefreshing = false
-                this.refreshPromise = null // Clear promise so next refresh can proceed
             }
-        })()
 
-        return await this.refreshPromise
+            // Check if we've exceeded max refresh attempts
+            if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
+                console.error('❌ Max refresh attempts exceeded. Clearing tokens to force re-login.')
+                this.clearAuthData(true) // Redirect to login
+                return false
+            }
+
+            this.isRefreshing = true
+
+            const refreshToken = localStorage.getItem('refresh_token')
+            if (!refreshToken) {
+                console.error('❌ No refresh token available')
+                this.failedRefreshAttempts++
+                throw new Error('No refresh token available')
+            }
+ 
+            const response = await axios.post(`${this.baseURL}/api/jwt/refresh/`, {
+                refresh_token: refreshToken
+            })
+ 
+            if (response.data.status === 'success') {
+                const { access_token, refresh_token, access_token_expires, refresh_token_expires } = response.data
+               
+                // Update stored tokens - CRITICAL: Also update refresh token (token rotation)
+                localStorage.setItem('access_token', access_token)
+                localStorage.setItem('access_token_expires', access_token_expires)
+                
+                // BUGFIX: Save new refresh token to prevent 401 loop
+                // Backend rotates refresh tokens for security, so we must save the new one
+                if (refresh_token) {
+                    localStorage.setItem('refresh_token', refresh_token)
+                    console.log('🔄 Refresh token updated (token rotation)')
+                }
+                if (refresh_token_expires) {
+                    localStorage.setItem('refresh_token_expires', refresh_token_expires)
+                }
+               
+                // Update axios default headers
+                axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
+               
+                // Reset failed attempts counter on success
+                this.failedRefreshAttempts = 0
+                
+                console.log('🔄 JWT token refreshed successfully')
+                return true
+            } else {
+                this.failedRefreshAttempts++
+                throw new Error(response.data.message || 'Token refresh failed')
+            }
+        } catch (error) {
+            console.error('❌ JWT token refresh error:', error)
+            this.failedRefreshAttempts++
+            
+            // If we've failed too many times, clear auth data to force re-login
+            if (this.failedRefreshAttempts >= this.maxRefreshAttempts) {
+                console.error('❌ Too many failed refresh attempts. User needs to re-login.')
+                this.clearAuthData(true) // Redirect to login
+            }
+            
+            return false
+        } finally {
+            this.isRefreshing = false
+        }
     }
  
     async logout() {
@@ -485,8 +477,8 @@ class AuthService {
         } catch (error) {
             console.warn('Logout API call failed, but continuing with local cleanup:', error)
         } finally {
-            // Clear all stored data
-            this.clearAuthData()
+            // Clear all stored data (don't auto-redirect, let logout flow handle it)
+            this.clearAuthData(false)
             // Reset flags
             this.isLoggingOut = false
             this.isRefreshing = false
@@ -500,7 +492,7 @@ class AuthService {
         // Do nothing - user stays logged in
     }
  
-    clearAuthData() {
+    clearAuthData(shouldRedirect = true) {
         // Stop periodic refresh
         this.stopPeriodicTokenRefresh()
        
@@ -534,7 +526,7 @@ class AuthService {
         // Clear all service data
         try {
             const { default: incidentService } = require('./incidentService.js')
-            incidentService.clearData()
+            incidentService.clearCache()
             console.log('🧹 Incident service data cleared')
         } catch (error) {
             console.error('❌ Error clearing Incident data:', error)
@@ -573,6 +565,23 @@ class AuthService {
         }
        
         console.log('🧹 Auth data cleared')
+        
+        // Redirect to login if requested (default: true)
+        // Only redirect if not already on login page and not during explicit logout
+        // Also check if we're in the middle of a form submission to avoid interrupting user work
+        if (shouldRedirect && 
+            window.location.pathname !== '/login' && 
+            window.location.pathname !== '/' &&
+            !this.isLoggingOut) {
+            console.log('🔄 Redirecting to login page...')
+            // Use setTimeout to allow cleanup to complete first
+            setTimeout(() => {
+                // Double-check we're still not logged in before redirecting
+                if (!localStorage.getItem('access_token')) {
+                    window.location.href = '/login'
+                }
+            }, 100)
+        }
     }
    
     startPeriodicTokenRefresh() {
@@ -587,17 +596,6 @@ class AuthService {
         // Check token every 5 minutes (300 seconds) - less aggressive refresh
         this.refreshInterval = setInterval(async () => {
             try {
-                // Skip if we're logging out or in cooldown
-                if (this.isLoggingOut) {
-                    return
-                }
-
-                // Check cooldown period
-                const now = Date.now()
-                if (this.lastRefreshAttempt > 0 && (now - this.lastRefreshAttempt) < this.refreshCooldown) {
-                    return
-                }
-
                 // Reduced logging - only log when actually refreshing
                 await this.checkAndRefreshToken()
             } catch (error) {
@@ -734,7 +732,7 @@ class AuthService {
         } catch (error) {
             console.warn('Session logout API call failed, but continuing with local cleanup:', error)
         } finally {
-            this.clearAuthData()
+            this.clearAuthData(false) // Don't auto-redirect for explicit logout
         }
     }
 }

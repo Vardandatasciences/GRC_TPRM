@@ -27,7 +27,9 @@ except ImportError:
 # Configuration - Use Django settings
 from django.conf import settings
 OPENAI_API_KEY = getattr(settings, 'OPENAI_API_KEY', None)
-MODEL_NAME = getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini')
+# Clean model name - strip quotes and whitespace to avoid "invalid model ID" errors
+MODEL_NAME_RAW = getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini')
+MODEL_NAME = str(MODEL_NAME_RAW).strip().strip('"').strip("'")
 SECTIONS_DIR = "sections_out_tcfd"
 OUTPUT_DIR = "policies_extracted_tcfd_UPDATED_ENHANCED_NEW"
 
@@ -40,12 +42,14 @@ class EnhancedPolicyExtractor:
             raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY in Django settings or pass api_key parameter.")
         
         self.client = OpenAI(api_key=api_key)
-        self.model = model
+        # Clean model name - strip quotes and whitespace
+        self.model = str(model).strip().strip('"').strip("'")
         
         # Print configuration info similar to risk_instance_ai.py
         if OPENAI_API_KEY:
             print(f"🌐 OpenAI Configuration for Policy Extractor:")
-            print(f"   Model: {self.model}")
+            print(f"   Model (original): '{MODEL_NAME_RAW}'")
+            print(f"   Model (cleaned): '{self.model}'")
             print(f"   API Key: {'*' * (len(OPENAI_API_KEY) - 4) + OPENAI_API_KEY[-4:]}")
         else:
             print("⚠️  WARNING: OPENAI_API_KEY not found in Django settings!")
@@ -509,7 +513,32 @@ Ensure all policies have comprehensive metadata including scope, objective, cate
                             time.sleep(1)
                             
                 except Exception as e:
-                    print(f"[ERROR] OpenAI API call failed for '{section_title}' chunk {i+1}, attempt {attempt+1}: {e}")
+                    # Enhanced error logging for OpenAI API errors
+                    error_msg = str(e)
+                    print(f"[ERROR] OpenAI API call failed for '{section_title}' chunk {i+1}, attempt {attempt+1}: {error_msg}")
+                    
+                    # Check if it's an OpenAI API error with details
+                    if hasattr(e, 'response') and hasattr(e.response, 'json'):
+                        try:
+                            error_data = e.response.json()
+                            error_obj = error_data.get('error', {})
+                            if isinstance(error_obj, dict):
+                                error_detail = error_obj.get('message', 'Unknown error')
+                                error_type = error_obj.get('type', 'Unknown type')
+                                error_code = error_obj.get('code', 'Unknown code')
+                                print(f"[ERROR] OpenAI Error Details:")
+                                print(f"   Type: {error_type}")
+                                print(f"   Code: {error_code}")
+                                print(f"   Message: {error_detail}")
+                                print(f"   Model sent: '{self.model}'")
+                        except Exception:
+                            pass
+                    elif 'invalid model ID' in error_msg.lower() or '400' in error_msg:
+                        print(f"[ERROR] Model ID issue detected!")
+                        print(f"   Original model from settings: '{MODEL_NAME_RAW}'")
+                        print(f"   Cleaned model: '{self.model}'")
+                        print(f"   Please check OPENAI_MODEL in Django settings")
+                    
                     if attempt == max_retries - 1:
                         print(f"[SKIP] Skipping chunk after {max_retries} attempts")
                     else:

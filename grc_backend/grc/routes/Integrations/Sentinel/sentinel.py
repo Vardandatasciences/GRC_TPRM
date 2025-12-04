@@ -64,7 +64,42 @@ class SentinelOAuthService:
         self.client_id = os.getenv('MICROSOFT_CLIENT_ID', '1d9fdf2e-ebc8-47e0-8e7d-4c4c41b6a616')
         self.client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         self.tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'aa7c8c45-41a3-4453-bc9a-3adfe8ff5fb6')
-        self.redirect_uri = os.getenv('REDIRECT_URI', 'https://api-grc.vardaands.com/auth/sentinel/callback')
+        # Use MICROSOFT_REDIRECT_URI to match settings.py, with fallback options
+        # Priority: MICROSOFT_REDIRECT_URI env var > REDIRECT_URI env var > settings.REDIRECT_URI > default
+        
+        def clean_redirect_uri(uri):
+            """Remove quotes and whitespace from redirect URI"""
+            if not uri:
+                return None
+            uri = str(uri).strip()
+            # Remove quotes from start and end if present
+            while (uri.startswith('"') and uri.endswith('"')) or (uri.startswith("'") and uri.endswith("'")):
+                uri = uri[1:-1].strip()
+            return uri.strip('"\'')
+        
+        redirect_uri_from_env = clean_redirect_uri(os.getenv('MICROSOFT_REDIRECT_URI') or os.getenv('REDIRECT_URI'))
+        redirect_uri_from_settings = clean_redirect_uri(getattr(settings, 'REDIRECT_URI', None))
+        
+        # Determine default based on environment
+        use_local = os.getenv('USE_LOCAL_DEVELOPMENT', 'false').lower() == 'true'
+        default_redirect_uri = (
+            'http://localhost:8000/auth/sentinel/callback' if use_local
+            else 'https://grc-backend.vardaands.com/auth/sentinel/callback'
+        )
+        
+        # Use first available value, ensuring it's cleaned
+        self.redirect_uri = redirect_uri_from_env or redirect_uri_from_settings or default_redirect_uri
+        
+        # Validate redirect_uri is not empty and is a valid absolute URI
+        if not self.redirect_uri:
+            raise ValueError(
+                "Redirect URI must be configured. Set MICROSOFT_REDIRECT_URI or REDIRECT_URI environment variable."
+            )
+        if not (self.redirect_uri.startswith('http://') or self.redirect_uri.startswith('https://')):
+            raise ValueError(
+                f"Redirect URI must be a valid absolute URI (starting with http:// or https://). "
+                f"Got: {repr(self.redirect_uri)}"
+            )
         self.scope = 'https://graph.microsoft.com/.default'
     
     def get_authorization_url(self, state):

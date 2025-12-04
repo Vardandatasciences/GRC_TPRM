@@ -1004,7 +1004,7 @@ export default {
           
           this.incidentCounts = incidentCountsResponse;
           this.loading = false;
-          this.dataSourceMessage = '✅ All KPI data loaded from cache (prefetched on Home page)';
+          this.dataSourceMessage = '';
           console.log('✅ [IncidentDashboard] All KPIs loaded from cache - INSTANT!');
           return;
         }
@@ -1039,7 +1039,7 @@ export default {
             totalCount: basicKPIs.totalCount,
             statusCounts: basicKPIs.statusCounts
           });
-          this.dataSourceMessage = '⚡ Basic KPIs loaded from cache, fetching detailed metrics...';
+          this.dataSourceMessage = '';
         }
         
         // Set loading to false IMMEDIATELY so UI renders (even if KPIs are still fetching)
@@ -1150,9 +1150,9 @@ export default {
         const cachedCount = kpiResults.filter(r => r.status === 'fulfilled').length;
         const totalCount = kpiKeys.length;
         if (cachedCount === totalCount) {
-          this.dataSourceMessage = `✅ All ${totalCount} KPI metrics loaded (mix of cache and API)`;
+          this.dataSourceMessage = '';
         } else {
-          this.dataSourceMessage = `📊 Loaded ${cachedCount}/${totalCount} KPI metrics from API (cache partial)`;
+          this.dataSourceMessage = '';
         }
         
         console.log('✅ [IncidentDashboard] All KPIs loaded');

@@ -6753,7 +6753,7 @@ def export_audit_compliances(request, format, item_type, item_id):
         )
         
         # Use the export_data function from export_service
-        from ...routes.Global.export_service1 import export_data
+        from ...routes.Global.s3_fucntions import export_data
         result = export_data(
             data=compliances_data,
             file_format=format,

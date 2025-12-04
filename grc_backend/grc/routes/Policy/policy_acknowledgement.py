@@ -327,7 +327,7 @@ def create_acknowledgement_request(request):
                         # Send email notification if requested
                         # For manual emails, always send email; for database users, check send_email flag
                         should_send_email = send_email and target_user.Email
-                        is_manual_email = manual_email and target_user.Email == manual_email
+                        is_manual_email = target_user.Email in manual_emails if manual_emails else False
                         
                         if should_send_email or is_manual_email:
                             # Prepare email notification data with external link

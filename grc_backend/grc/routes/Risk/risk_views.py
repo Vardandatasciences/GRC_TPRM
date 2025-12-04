@@ -1,4 +1,4 @@
-from ...routes.Global.export_service1 import export_data
+from ...routes.Global.s3_fucntions import export_data
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny
@@ -73,12 +73,16 @@ def export_risk_register_v2(request):
         file_name = data.get('file_name', 'risk_register_export')
         
         # Log the request for debugging
-        print(f"📊 Export request received:")
-        print(f"   Format: {export_format}")
-        print(f"   User ID: {user_id}")
-        print(f"   File name: {file_name}")
-        print(f"   Data size: {len(str(risk_data))} characters")
-        print(f"   Records count: {len(risk_data) if isinstance(risk_data, list) else 1}")
+        import datetime
+        request_start = datetime.datetime.now()
+        print(f"\n{'='*80}")
+        print(f"📥 [ROUTE] Export request received at {request_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*80}")
+        print(f"   ├─ Format: {export_format}")
+        print(f"   ├─ User ID: {user_id}")
+        print(f"   ├─ File name: {file_name}")
+        print(f"   ├─ Data size: {len(str(risk_data)):,} characters ({len(str(risk_data)) / (1024*1024):.2f} MB)")
+        print(f"   └─ Records count: {len(risk_data) if isinstance(risk_data, list) else 1:,}")
         
         # Simple export logic without external service dependency
         if export_format == 'json':
@@ -111,9 +115,11 @@ def export_risk_register_v2(request):
             response['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
             return response
         else:
-            # Try to use export_data from export_service1.py as fallback
+            # Try to use export_data from s3_fucntions.py
             try:
-                print(f"🔄 Using export_service1 for format: {export_format}")
+                print(f"\n🔄 [ROUTE] Calling s3_fucntions.export_data() for format: {export_format}")
+                route_call_start = datetime.datetime.now()
+                
                 result = export_data(
                     data=risk_data,
                     file_format=export_format,
@@ -122,7 +128,23 @@ def export_risk_register_v2(request):
                         'file_name': file_name
                     }
                 )
-                print(f"✅ Export service result: {result.get('success', False)}")
+                
+                route_call_time = (datetime.datetime.now() - route_call_start).total_seconds()
+                total_route_time = (datetime.datetime.now() - request_start).total_seconds()
+                
+                print(f"\n📤 [ROUTE] Export function completed in {route_call_time:.2f} seconds")
+                print(f"   ├─ Success: {result.get('success', False)}")
+                if result.get('success'):
+                    print(f"   ├─ File URL: {result.get('file_url', 'N/A')}")
+                    print(f"   ├─ File name: {result.get('file_name', 'N/A')}")
+                else:
+                    print(f"   ├─ Error: {result.get('error', 'Unknown error')}")
+                print(f"   └─ Total route time: {total_route_time:.2f} seconds")
+                
+                print(f"\n{'='*80}")
+                print(f"✅ [ROUTE] Response sent - Total time: {total_route_time:.2f} seconds")
+                print(f"{'='*80}\n")
+                
                 response = JsonResponse(result)
                 # Add CORS headers
                 response['Access-Control-Allow-Origin'] = '*'
@@ -130,9 +152,15 @@ def export_risk_register_v2(request):
                 response['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
                 return response
             except Exception as export_error:
-                print(f"❌ Export service error: {str(export_error)}")
+                route_call_time = (datetime.datetime.now() - route_call_start).total_seconds()
+                total_route_time = (datetime.datetime.now() - request_start).total_seconds()
+                print(f"\n❌ [ROUTE] Export service error after {route_call_time:.2f} seconds: {str(export_error)}")
+                print(f"   └─ Total route time: {total_route_time:.2f} seconds")
                 import traceback
                 traceback.print_exc()
+                print(f"\n{'='*80}")
+                print(f"❌ [ROUTE] ERROR - Total time: {total_route_time:.2f} seconds")
+                print(f"{'='*80}\n")
                 return JsonResponse({
                     "success": False, 
                     "error": f"Export format '{export_format}' not supported. Error: {str(export_error)}"
@@ -179,7 +207,7 @@ def export_compliance_management(request):
             response['Content-Disposition'] = f'attachment; filename="{file_name}.csv"'
             return response
         else:
-            # Try to use export_data from export_service1.py as fallback
+            # Try to use export_data from s3_fucntions.py
             try:
                 result = export_data(
                     data=compliance_data,
